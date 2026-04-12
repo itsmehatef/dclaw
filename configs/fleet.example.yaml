@@ -1,0 +1,22 @@
+# Docker Claw fleet configuration example
+version: 1
+
+main_agent:
+  name: "main"
+  image: "claude-code-configured:latest"
+  workspace: "./workspace"
+  channels:
+    - plugin: "discord"
+      version: "1.5.0"
+  egress_allowlist:
+    - "api.anthropic.com"
+    - "api.github.com"
+    - "registry.npmjs.org"
+
+workers:
+  max_concurrent: 5
+  max_cost_per_session_usd: 10.00
+  default_timeout_seconds: 3600
+  base_image: "claude-code-configured:latest"
+  egress_allowlist:
+    - "api.anthropic.com"

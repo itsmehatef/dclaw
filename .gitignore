@@ -1,0 +1,31 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+vendor/
+*.test
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build
+/build/
+
+# Node (for web UI later)
+node_modules/
+.next/
+
+# Temp
+*.tmp
+*.log
