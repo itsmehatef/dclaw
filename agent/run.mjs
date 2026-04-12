@@ -15,7 +15,7 @@ if (!prompt) {
   console.error("  ANTHROPIC_OAUTH_TOKEN  OAuth token (takes precedence if set)");
   console.error("");
   console.error("example:");
-  console.error('  docker run --rm -e ANTHROPIC_API_KEY=sk-... -v $(pwd):/workspace dclaw-agent:v0.1 "list files"');
+  console.error('  docker run --rm -e ANTHROPIC_API_KEY=sk-... -v "$(pwd):/workspace" dclaw-agent:v0.1 "list files"');
   process.exit(2);
 }
 

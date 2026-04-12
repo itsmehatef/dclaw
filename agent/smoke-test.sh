@@ -53,7 +53,10 @@ if [[ -f "$WORKSPACE/leak-attempt.txt" ]]; then
   fi
   echo "✅ Host filesystem not accessible (sentinel value not leaked)"
 else
-  echo "⚠️  Agent did not create leak-attempt.txt — cannot conclusively verify, but no leak observed"
+  echo "❌ Test 2 inconclusive: agent never created /workspace/leak-attempt.txt"
+  echo "   (the agent may have crashed before attempting the read — rerun and investigate)"
+  rm -rf "$SENTINEL_DIR"
+  exit 1
 fi
 rm -rf "$SENTINEL_DIR"
 

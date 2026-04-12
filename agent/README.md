@@ -47,5 +47,6 @@ Runs 4 end-to-end tests validating basic operation, sandboxing, workspace persis
 - No per-agent network allowlist (relies on Docker default bridge)
 - No worker spawning (single agent per container)
 - No channel integration (CLI input only)
+- Workspace ownership is implicit — /workspace is created by WORKDIR when the container builds, owned by the node user because USER node precedes WORKDIR. If the upstream node:22-bookworm-slim image ever pre-creates /workspace as root, the agent will silently fail to write. Phase 2 will add an explicit runtime check.
 
 All of the above are addressed in Phase 2+.
