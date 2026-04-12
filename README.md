@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="Docker Claw" width="300" />
+</p>
+
 # Docker Claw (dclaw)
 
 A container-native multi-agent platform with independently versioned channel plugins, sandboxed agent execution, and fleet orchestration.
