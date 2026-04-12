@@ -1,3 +1,3 @@
-module github.com/hatef/dclaw
+module github.com/realhatefk/dclaw
 
 go 1.23
