@@ -34,8 +34,8 @@ dclaw is a container-native multi-agent platform. Its architecture comprises fou
 
 | Component           | Description                                                        | Lifecycle       |
 |---------------------|--------------------------------------------------------------------|-----------------|
-| **Main Agent**      | Always-on container running Claude Code. Coordinates all work.     | Long-lived      |
-| **Worker Agent**    | Ephemeral container running Claude Code. Executes a scoped task.   | Task-scoped     |
+| **Main Agent**      | Always-on container running pi-mono. Coordinates all work.         | Long-lived      |
+| **Worker Agent**    | Ephemeral container running pi-mono. Executes a scoped task.       | Task-scoped     |
 | **Channel Plugin**  | Independently versioned container. Bridges a messaging platform.   | Long-lived      |
 | **Dispatcher**      | Go binary daemon. Manages the worker fleet.                        | Long-lived      |
 

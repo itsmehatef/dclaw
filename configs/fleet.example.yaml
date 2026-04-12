@@ -1,22 +1,38 @@
-# dclaw fleet configuration example
+# dclaw fleet configuration — example
+# Phase 2+ concept. The daemon that reads this config is not yet implemented.
+# Ships as part of Phase 2 alongside cmd/dclaw/main.go and internal/daemon/.
+
 version: 1
 
 main_agent:
   name: "main"
-  image: "claude-code-configured:latest"
+  # The agent container image. dclaw-agent:v0.1 is built by agent/Dockerfile
+  # and runs pi-mono (@mariozechner/pi-coding-agent) headlessly inside a sandbox.
+  image: "dclaw-agent:v0.1"
+  # Host directory bind-mounted as the agent's workspace (read/write).
   workspace: "./workspace"
+  # Channel plugins the main agent talks to. Each is an independently
+  # versioned container (Phase 2+). Not yet available.
   channels:
     - plugin: "discord"
-      version: "1.5.0"
+      version: "1.0.0"
+  # Outbound network allowlist enforced via per-container iptables (Phase 2+).
   egress_allowlist:
     - "api.anthropic.com"
     - "api.github.com"
     - "registry.npmjs.org"
 
 workers:
+  # Maximum concurrent worker agents the main agent may have running.
   max_concurrent: 5
+  # Hard cost ceiling per session — dispatcher refuses to spawn new workers
+  # once cumulative API spend crosses this threshold.
   max_cost_per_session_usd: 10.00
+  # If a worker runs longer than this, the dispatcher kills it.
   default_timeout_seconds: 3600
-  base_image: "claude-code-configured:latest"
+  # Base image for spawned worker agents. Same as main_agent unless overridden.
+  base_image: "dclaw-agent:v0.1"
+  # Default egress allowlist for workers. Can be tightened per-task when
+  # calling worker.spawn (scoped network policy).
   egress_allowlist:
     - "api.anthropic.com"
