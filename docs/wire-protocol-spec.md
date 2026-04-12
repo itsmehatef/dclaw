@@ -1,4 +1,4 @@
-# Docker Claw (dclaw) -- Wire Protocol Specification v1
+# dclaw -- Wire Protocol Specification v1
 
 | Field             | Value                    |
 |-------------------|--------------------------|
@@ -30,7 +30,7 @@
 
 ## 1. Overview
 
-Docker Claw (dclaw) is a container-native multi-agent platform. Its architecture comprises four component types:
+dclaw is a container-native multi-agent platform. Its architecture comprises four component types:
 
 | Component           | Description                                                        | Lifecycle       |
 |---------------------|--------------------------------------------------------------------|-----------------|

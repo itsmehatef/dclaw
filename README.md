@@ -1,14 +1,14 @@
 <p align="center">
-  <img src="logo.png" alt="Docker Claw" width="300" />
+  <img src="logo.png" alt="dclaw" width="300" />
 </p>
 
-# Docker Claw (dclaw)
+# dclaw
 
 A container-native multi-agent platform with independently versioned channel plugins, sandboxed agent execution, and fleet orchestration.
 
 ## What is this?
 
-Docker Claw runs AI agents (Claude Code) inside isolated Docker containers with:
+dclaw runs AI agents (Claude Code) inside isolated Docker containers with:
 
 - **Container-per-agent isolation** — each agent runs in its own sandbox with scoped filesystem, network, and tool access
 - **Independently versioned channel plugins** — upgrade Discord without touching Slack, roll back WhatsApp without affecting anything else
@@ -18,7 +18,7 @@ Docker Claw runs AI agents (Claude Code) inside isolated Docker containers with:
 
 ## Architecture
 
-![Docker Claw Platform Architecture](docker-claw-canonical.png)
+![dclaw Platform Architecture](docker-claw-canonical.png)
 
 ## Project Structure
 

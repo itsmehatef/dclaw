@@ -1,4 +1,4 @@
-# Docker Claw fleet configuration example
+# dclaw fleet configuration example
 version: 1
 
 main_agent:
