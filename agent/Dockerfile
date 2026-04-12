@@ -14,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Install sandbox runtime dependencies.
 # ripgrep + fd are pre-installed so pi-mono doesn't try to download them on first run.
 RUN --mount=type=cache,id=dclaw-apt-cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,id=dclaw-apt-lists,target=/var/lib/apt,sharing=locked \
+    --mount=type=cache,id=dclaw-apt-lists,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && \
     apt-get install -y --no-install-recommends \
       bash \
@@ -29,8 +29,7 @@ RUN --mount=type=cache,id=dclaw-apt-cache,target=/var/cache/apt,sharing=locked \
       fd-find \
       tini \
       unzip && \
-    ln -s /usr/bin/fdfind /usr/local/bin/fd && \
-    rm -rf /var/lib/apt/lists/*
+    ln -s /usr/bin/fdfind /usr/local/bin/fd
 
 # --- Build stage: install production deps only ---
 FROM base AS deps
@@ -43,14 +42,13 @@ RUN --mount=type=cache,id=dclaw-npm-cache,target=/root/.npm,sharing=locked \
 FROM base AS runtime
 
 # The `node` user (uid 1000) is pre-created by the upstream image.
+USER node
 WORKDIR /workspace
-RUN chown node:node /workspace
 
 COPY --from=deps --chown=node:node /app/node_modules /app/node_modules
 COPY --chown=node:node run.mjs /app/run.mjs
 COPY --chown=node:node package.json /app/package.json
 
-USER node
 ENV PATH=/app/node_modules/.bin:$PATH
 
 # tini forwards SIGTERM/SIGINT to Node and reaps zombies.

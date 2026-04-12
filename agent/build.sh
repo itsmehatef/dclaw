@@ -10,5 +10,4 @@ docker build -t "${TAG}" .
 
 echo ""
 echo "Built ${TAG}"
-docker image inspect "${TAG}" --format 'Size: {{.Size | printf "%d bytes (%.1f MB)" (div . 1048576)}}' 2>/dev/null || \
-  docker images "${TAG}" --format "Size: {{.Size}}"
+docker images "${TAG}" --format "Size: {{.Size}}"

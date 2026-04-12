@@ -15,7 +15,7 @@ Produces `dclaw-agent:v0.1` locally. First build takes ~2 minutes (apt + npm); s
 ```bash
 docker run --rm \
   -e ANTHROPIC_API_KEY=sk-ant-... \
-  -v $(pwd):/workspace \
+  -v "$(pwd):/workspace" \
   dclaw-agent:v0.1 \
   "your prompt here"
 ```

@@ -3,6 +3,7 @@
 // and inherits its stdio. Exits with pi's exit code.
 
 import { spawn } from "node:child_process";
+import * as os from "node:os";
 
 const prompt = process.argv.slice(2).join(" ").trim();
 
@@ -39,8 +40,9 @@ child.on("error", (err) => {
 
 child.on("exit", (code, signal) => {
   if (signal) {
-    console.error(`pi terminated by signal ${signal}`);
-    process.exit(128);
+    const signum = os.constants.signals[signal] ?? 0;
+    console.error(`pi terminated by signal ${signal} (exit ${128 + signum})`);
+    process.exit(128 + signum);
   }
   process.exit(code ?? 1);
 });
