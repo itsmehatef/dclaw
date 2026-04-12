@@ -1,0 +1,12 @@
+{
+  "name": "dclaw-agent",
+  "version": "0.1.0",
+  "description": "dclaw agent container — pi-mono wrapper",
+  "type": "module",
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.66.1"
+  }
+}

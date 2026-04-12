@@ -1,0 +1,10 @@
+node_modules
+.git
+.github
+.vscode
+.env
+.env.*
+*.log
+smoke-test.sh
+build.sh
+README.md

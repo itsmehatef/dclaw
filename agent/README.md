@@ -1,0 +1,51 @@
+# dclaw-agent (Phase 1)
+
+A Docker container that runs pi-mono's coding agent headlessly. Give it a prompt, get a response, exit.
+
+## Build
+
+```bash
+./build.sh
+```
+
+Produces `dclaw-agent:v0.1` locally. First build takes ~2 minutes (apt + npm); subsequent builds use BuildKit cache.
+
+## Run
+
+```bash
+docker run --rm \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -v $(pwd):/workspace \
+  dclaw-agent:v0.1 \
+  "your prompt here"
+```
+
+The agent can read, write, edit, and run bash commands inside the container. It cannot see anything outside `/workspace` except the container's own rootfs. It can reach the Anthropic API but nothing else (in Phase 1; firewall allowlist is Phase 2).
+
+## Smoke test
+
+```bash
+ANTHROPIC_API_KEY=sk-... ./smoke-test.sh
+```
+
+Runs 4 end-to-end tests validating basic operation, sandboxing, workspace persistence, and network isolation.
+
+## What's inside
+
+- `node:22-bookworm-slim` base image
+- `@mariozechner/pi-coding-agent` (pi-mono's headless coding agent)
+- Runtime tools: bash, git, ripgrep, fd, jq, curl, tini
+- Non-root `node` user (uid 1000)
+- `tini` as PID 1 for signal handling
+- `/workspace` as the only writable host-mounted directory
+
+## Known limitations (v0.1)
+
+- Single-turn only (one prompt, one response)
+- No conversation history (--no-session)
+- No streaming output (buffered final text)
+- No per-agent network allowlist (relies on Docker default bridge)
+- No worker spawning (single agent per container)
+- No channel integration (CLI input only)
+
+All of the above are addressed in Phase 2+.
