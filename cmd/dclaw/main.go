@@ -1,7 +1,22 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+
+	"github.com/realhatefk/dclaw/internal/cli"
+)
 
 func main() {
-	fmt.Println("dclaw v0.0.1-dev")
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "dclaw: panic: %v\n", r)
+			os.Exit(1)
+		}
+	}()
+
+	if err := cli.Execute(); err != nil {
+		// cobra already printed the user-facing error; just exit.
+		os.Exit(1)
+	}
 }

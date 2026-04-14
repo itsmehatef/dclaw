@@ -43,6 +43,32 @@ dclaw/
 └── README.md
 ```
 
+## Building the CLI (v0.2.0-cli)
+
+Requires Go 1.22+.
+
+```bash
+# Build the binary into ./bin/dclaw
+make build
+
+# Install into $GOPATH/bin
+make install
+
+# Check the build
+./bin/dclaw version
+# dclaw version 0.2.0-cli (commit abc1234, built 2026-04-14T...Z, go1.22.x)
+```
+
+### CLI status in v0.2.0-cli
+
+Only `dclaw version` and `dclaw --help` are fully wired. Every command that
+would normally require the dclaw daemon (`agent create`, `agent list`, `channel
+attach`, `daemon start`, etc.) exits with code **69 (EX_UNAVAILABLE)** and a
+message pointing at the next milestone. Use `-o json` to receive a structured
+`{"error": "feature_not_ready", ...}` envelope for scripting.
+
+The daemon ships in `v0.3.0-daemon`.
+
 ## Tech Stack
 
 - **dclaw daemon (control plane)**: Go — fleet management, channel routing, quota enforcement, CLI
@@ -54,7 +80,7 @@ dclaw/
 
 ## Status
 
-Early development — Phase 1 (one agent loop working inside a container)
+Early development — Phase 2 CLI (v0.2.0-cli): CLI bones shipped; daemon next (v0.3.0-daemon).
 
 ## License
 
