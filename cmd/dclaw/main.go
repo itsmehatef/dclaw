@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/realhatefk/dclaw/internal/cli"
+	"github.com/itsmehatef/dclaw/internal/cli"
 )
 
 func main() {

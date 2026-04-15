@@ -19,7 +19,7 @@
 | **Prereqs**        | Phase 1 complete (`v0.1.0` tagged). Go 1.22+ installed.           |
 | **Next milestone** | `v0.3.0-daemon` — daemon + SQLite + real CRUD behind the stubs.   |
 | **Binary**         | `dclaw` (installed to `$GOPATH/bin` or `/usr/local/bin`).         |
-| **Module path**    | `github.com/realhatefk/dclaw`                                     |
+| **Module path**    | `github.com/itsmehatef/dclaw`                                     |
 
 ---
 
@@ -230,7 +230,7 @@ These are copy-paste ready. Anything `REPLACE_ME` is a placeholder the implement
 ### 7.1 `go.mod`
 
 ```
-module github.com/realhatefk/dclaw
+module github.com/itsmehatef/dclaw
 
 go 1.22
 
@@ -250,7 +250,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/realhatefk/dclaw/internal/cli"
+	"github.com/itsmehatef/dclaw/internal/cli"
 )
 
 func main() {
@@ -351,7 +351,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/realhatefk/dclaw/internal/version"
+	"github.com/itsmehatef/dclaw/internal/version"
 )
 
 var versionCmd = &cobra.Command{
@@ -1001,7 +1001,7 @@ func GoVersion() string {
 # dclaw Makefile — v0.2.0-cli
 
 BINARY      := dclaw
-PKG         := github.com/realhatefk/dclaw
+PKG         := github.com/itsmehatef/dclaw
 CMD         := ./cmd/dclaw
 BIN_DIR     := ./bin
 
@@ -1208,7 +1208,7 @@ Also update "Status" at the bottom of `README.md` from `Early development — Ph
 Every step is small enough to execute without re-planning. Run from `/Users/hatef/workspace/agents/atlas/dclaw/` unless otherwise noted.
 
 ### Step 1: Overwrite `go.mod`
-Edit the existing `go.mod` (currently a single line `module github.com/realhatefk/dclaw` plus `go 1.23`) to match Section 7.1. Do not run `go mod init`; the module line is already there.
+Edit the existing `go.mod` (currently a single line `module github.com/itsmehatef/dclaw` plus `go 1.23`) to match Section 7.1. Do not run `go mod init`; the module line is already there.
 
 ### Step 2: Add the cobra dependency
 ```bash
@@ -1409,7 +1409,7 @@ The stubs themselves call `os.Exit(69)`, so direct in-process unit testing of ex
 
 4. **`MarkFlagRequired` returns an error** — always wrap with `_ = ` to satisfy `errcheck` lint. A failure means the flag name is wrong, which is a programming error caught in dev.
 
-5. **ldflags paths** — the `-X` path is `github.com/realhatefk/dclaw/internal/version.Version` exactly. A typo silently leaves `Version = "dev"`. Double-check by running the built binary before tagging.
+5. **ldflags paths** — the `-X` path is `github.com/itsmehatef/dclaw/internal/version.Version` exactly. A typo silently leaves `Version = "dev"`. Double-check by running the built binary before tagging.
 
 6. **`go.mod` toolchain** — the spec uses `go 1.22` as the minimum. The existing repo said `go 1.23`; we downgrade to `1.22` to match the CI `setup-go` version and broaden compatibility. Future bumps require updating both `go.mod` and `.github/workflows/build.yml` in the same commit.
 
@@ -1460,7 +1460,7 @@ Note: usage-vs-runtime differentiation (mapping usage errors like missing flags 
 12. [ ] README.md updated with build instructions + CLI status
 13. [ ] `.github/workflows/build.yml` green on the PR / push
 14. [ ] Commit tagged `v0.2.0-cli`
-15. [ ] Tag pushed to `github.com/realhatefk/dclaw`
+15. [ ] Tag pushed to `github.com/itsmehatef/dclaw`
 16. [ ] Handoff doc (`~/.claude/projects/-Users-hatef-workspace-agents-atlas/handoff/dclaw.md`) updated: "Last updated" bumped to today, Phase 2 state set to "CLI in place; daemon next", pointer to `docs/phase-2-cli-plan.md` added
 
 ---

@@ -589,7 +589,7 @@ git push && git push --tags
 - [ ] Real prompt returns sensible output
 - [ ] Adversarial test confirms host filesystem is untouched
 - [ ] Commit tagged `v0.1.0`
-- [ ] Pushed to `main` on github.com/realhatefk/dclaw
+- [ ] Pushed to `main` on github.com/itsmehatef/dclaw
 
 ---
 

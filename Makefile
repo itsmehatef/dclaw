@@ -1,7 +1,7 @@
 # dclaw Makefile — v0.2.0-cli
 
 BINARY      := dclaw
-PKG         := github.com/realhatefk/dclaw
+PKG         := github.com/itsmehatef/dclaw
 CMD         := ./cmd/dclaw
 BIN_DIR     := ./bin
 
