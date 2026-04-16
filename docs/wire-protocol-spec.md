@@ -20,6 +20,7 @@
 5. [Boundary 1: Channel Plugin <-> Main Agent](#5-boundary-1-channel-plugin--main-agent)
 6. [Boundary 2: Main Agent <-> Dispatcher](#6-boundary-2-main-agent--dispatcher)
 7. [Boundary 3: Worker <-> Dispatcher](#7-boundary-3-worker--dispatcher)
+7a. [Boundary 4: CLI <-> Daemon](#7a-boundary-4-cli--daemon)
 8. [Error Codes](#8-error-codes)
 9. [Heartbeat and Liveness](#9-heartbeat-and-liveness)
 10. [Message Size Limits](#10-message-size-limits)
@@ -41,7 +42,7 @@ dclaw is a container-native multi-agent platform. Its architecture comprises fou
 
 All inter-component communication travels over **Unix domain sockets** using **JSON-RPC 2.0** messages encoded as UTF-8.
 
-There are three distinct communication boundaries, each with its own socket and message set:
+There are three core agent-architecture communication boundaries, each with its own socket and message set. A fourth boundary (CLI <-> Daemon) was added in v0.3 for host-side control; it is dclaw-specific and documented separately in Section 7a:
 
 ![Architecture Overview: Three communication boundaries connecting Channel Plugin, Main Agent, Dispatcher, and Worker](diagram-1-architecture.png)
 
@@ -51,17 +52,20 @@ There are three distinct communication boundaries, each with its own socket and 
 
 ### Socket Paths
 
-Each communication boundary uses a dedicated Unix domain socket. All sockets reside under `/var/run/dclaw/`.
+Each communication boundary uses a dedicated Unix domain socket. All sockets reside in user-owned runtime directories; no sudo required.
 
-| Boundary                     | Socket Path Pattern                          | Creator     |
-|------------------------------|----------------------------------------------|-------------|
-| Channel Plugin <-> Main Agent | `/var/run/dclaw/channel-<plugin_name>.sock`  | Main Agent  |
-| Main Agent <-> Dispatcher    | `/var/run/dclaw/dispatcher.sock`              | Dispatcher  |
-| Worker <-> Dispatcher        | `/var/run/dclaw/worker-<worker_id>.sock`      | Dispatcher  |
+| Boundary                      | Socket Path Pattern (Linux)                                      | Socket Path Pattern (macOS)                    | Creator     |
+|-------------------------------|------------------------------------------------------------------|------------------------------------------------|-------------|
+| CLI <-> Daemon                | `$XDG_RUNTIME_DIR/dclaw.sock` (fallback `~/.dclaw/dclaw.sock`)   | `~/.dclaw/dclaw.sock`                           | Dispatcher  |
+| Channel Plugin <-> Main Agent | `$XDG_RUNTIME_DIR/dclaw-channel-<plugin_name>.sock`              | `~/.dclaw/channel-<plugin_name>.sock`          | Main Agent  |
+| Main Agent <-> Dispatcher     | `$XDG_RUNTIME_DIR/dclaw-dispatcher.sock` (fallback `~/.dclaw/dispatcher.sock`) | `~/.dclaw/dispatcher.sock`          | Dispatcher  |
+| Worker <-> Dispatcher         | `$XDG_RUNTIME_DIR/dclaw-worker-<worker_id>.sock`                 | `~/.dclaw/worker-<worker_id>.sock`             | Dispatcher  |
 
-- The **Dispatcher** creates the main dispatcher socket at startup.
+- The **Dispatcher** creates the CLI-facing socket and the main dispatcher socket at startup.
 - The **Dispatcher** creates a per-worker socket at spawn time and bind-mounts it into the worker container.
 - The **Main Agent** creates per-channel-plugin sockets when channel plugins register.
+
+All sockets are owned by the invoking user (no root, no `/var/run/`). On Linux, `$XDG_RUNTIME_DIR` is the preferred location (typically `/run/user/<uid>/`); if it is unset, the daemon falls back to `~/.dclaw/`. On macOS, sockets always live under `~/.dclaw/` because `XDG_RUNTIME_DIR` is not conventionally set.
 
 ### Socket Permissions
 
@@ -255,7 +259,7 @@ After a rejected handshake, the listener closes the connection.
 
 ## 5. Boundary 1: Channel Plugin <-> Main Agent
 
-**Socket:** `/var/run/dclaw/channel-<plugin_name>.sock`
+**Socket:** `$XDG_RUNTIME_DIR/dclaw-channel-<plugin_name>.sock` on Linux (fallback `~/.dclaw/channel-<plugin_name>.sock`); `~/.dclaw/channel-<plugin_name>.sock` on macOS.
 
 This boundary normalizes platform-specific messaging APIs (Discord, Slack, WhatsApp, etc.) into a common format. The channel plugin translates between its native protocol and the dclaw wire protocol.
 
@@ -617,7 +621,7 @@ Fetch recent messages from a channel.
 
 ## 6. Boundary 2: Main Agent <-> Dispatcher
 
-**Socket:** `/var/run/dclaw/dispatcher.sock`
+**Socket:** `$XDG_RUNTIME_DIR/dclaw-dispatcher.sock` on Linux (fallback `~/.dclaw/dispatcher.sock`); `~/.dclaw/dispatcher.sock` on macOS.
 
 This boundary allows the main agent to manage the worker fleet: spawning, querying, communicating with, and terminating worker containers.
 
@@ -1050,7 +1054,7 @@ The system is approaching a quota limit.
 
 ## 7. Boundary 3: Worker <-> Dispatcher
 
-**Socket:** `/var/run/dclaw/worker-<worker_id>.sock`
+**Socket:** `$XDG_RUNTIME_DIR/dclaw-worker-<worker_id>.sock` on Linux (fallback `~/.dclaw/worker-<worker_id>.sock`); `~/.dclaw/worker-<worker_id>.sock` on macOS.
 
 This boundary provides the worker with a minimal set of RPCs. Workers are scoped executors -- they can report results, ask questions, send heartbeats, and declare completion.
 
@@ -1306,6 +1310,58 @@ The dispatcher is terminating this worker. The worker should perform any minimal
 
 ---
 
+## 7a. Boundary 4: CLI <-> Daemon
+
+**Socket:** `$XDG_RUNTIME_DIR/dclaw.sock` on Linux (fallback `~/.dclaw/dclaw.sock`); `~/.dclaw/dclaw.sock` on macOS.
+
+This boundary is dclaw-specific (not part of the core three-boundary agent architecture) and was introduced in v0.3. It is how `dclaw` (the CLI and the TUI) talks to `dclawd` (the host-side daemon) to create, inspect, and operate agents/channels. The CLI is the connector; the daemon is the listener.
+
+A note on the agent-directed methods below (`agent.chat.send`, `agent.exec`, `agent.attach`, `agent.logs`): these are **content-addressed** -- they target any agent by name, not only the main agent. The "main-agent" concept on Boundary 2 is a convention of the Phase 4+ multi-agent topology; this boundary does not enforce it. A single-agent deployment is a valid topology, and this boundary does not care whether the addressed agent is playing the "main" role or not.
+
+### 7a.1 CLI -> Daemon
+
+These are RPC requests sent by the CLI/TUI to the daemon. All use the standard JSON-RPC 2.0 envelope defined in Section 3.
+
+| Method                | Type         | Payload summary                                                                                           |
+|-----------------------|--------------|-----------------------------------------------------------------------------------------------------------|
+| `agent.create`        | Request      | `{name, image, workspace?, env?, labels?}` -> `{id, name, status}`                                        |
+| `agent.list`          | Request      | `{status_filter?}` -> `{agents: [{name, image, status, created_at}, ...]}`                                |
+| `agent.get`           | Request      | `{name}` -> `{name, image, status, container_id?, created_at, updated_at, labels, env}`                   |
+| `agent.describe`      | Request      | `{name}` -> `{agent: {...}, events: [{ts, type, msg}, ...]}` (events from the SQLite `events` table)      |
+| `agent.update`        | Request      | `{name, image?, env?, labels?}` -> `{name, updated_at}`                                                   |
+| `agent.delete`        | Request      | `{name, force?}` -> `{deleted: bool}`                                                                     |
+| `agent.start`         | Request      | `{name}` -> `{name, status, container_id}`                                                                |
+| `agent.stop`          | Request      | `{name, timeout_seconds?}` -> `{name, status}`                                                            |
+| `agent.restart`       | Request      | `{name}` -> `{name, status, container_id}`                                                                |
+| `agent.logs`          | Request      | `{name, follow?, since?, tail_lines?}` -> streams `agent.log_line` notifications until ctx done           |
+| `agent.exec`          | Request      | `{name, argv: [string]}` -> streams `agent.exec.chunk` notifications; final has `exit_code`               |
+| `agent.attach`        | Request      | `{name}` -> `{name, status}` (TUI convenience; does NOT auto-start a stopped agent)                       |
+| `agent.chat.send`     | Request      | `{name, message}` -> streams `agent.chat.chunk` notifications until one has `final: true`                 |
+| `channel.create`      | Request      | `{name, kind, config?}` -> `{id, name, kind}`                                                             |
+| `channel.list`        | Request      | `{}` -> `{channels: [{name, kind, attached_agents}, ...]}`                                                |
+| `channel.get`         | Request      | `{name}` -> `{name, kind, config, attached_agents}`                                                       |
+| `channel.delete`      | Request      | `{name}` -> `{deleted: bool}`                                                                             |
+| `channel.attach`      | Request      | `{channel, agent}` -> `{attached: bool}` (routing wiring lands in v0.4)                                   |
+| `channel.detach`      | Request      | `{channel, agent}` -> `{detached: bool}`                                                                  |
+| `daemon.ping`         | Request      | `{}` -> `{pong: true, uptime_seconds}` (registered for future health-check probes; unused in v0.3)        |
+| `daemon.shutdown`     | Request      | `{}` -> `{shutting_down: true}` (clean shutdown; SIGTERM to the pidfile is the bulletproof fallback)      |
+| `daemon.status`       | Request      | `{}` -> `{version, uptime_seconds, agents_total, agents_running, channels_total}`                         |
+| `status.get`          | Request      | `{}` -> alias of `daemon.status`; returned as-is for `dclaw status`                                       |
+
+### 7a.2 Daemon -> CLI (Notifications)
+
+These are asynchronous notifications pushed from the daemon to the CLI/TUI on an open connection, typically in response to a streaming request like `agent.logs` or `agent.chat.send`. They carry no `id` and expect no response.
+
+| Method              | Triggered by          | Payload summary                                                             |
+|---------------------|-----------------------|-----------------------------------------------------------------------------|
+| `agent.log_line`    | `agent.logs`          | `{name, stream: "stdout"|"stderr", line, ts}`                               |
+| `agent.exec.chunk`  | `agent.exec`          | `{name, stream, data, exit_code?, final?}` (last chunk has `final: true`)   |
+| `agent.chat.chunk`  | `agent.chat.send`     | `{name, role: "agent", text, final}` (last chunk has `final: true`)         |
+
+Note on `agent.chat.send`: the v0.3 alpha.3 implementation pipes through `docker exec` to run `pi -p --no-session "<message>"` inside the target agent container, streaming stdout line-by-line as `agent.chat.chunk` notifications. Because addressing is by agent name, the same method works for single-agent and multi-agent deployments; the main-agent / worker distinction on Boundary 2 is orthogonal to this boundary.
+
+---
+
 ## 8. Error Codes
 
 ### 8.1 Standard JSON-RPC 2.0 Error Codes
@@ -1516,6 +1572,32 @@ Protocol version 2 may introduce request multiplexing (multiple in-flight reques
 | `worker.done`               | Worker <-> Dispatcher        | Worker -> Dispatcher       | Request      |
 | `worker.message_from_main`  | Worker <-> Dispatcher        | Dispatcher -> Worker       | Notification |
 | `worker.kill_signal`         | Worker <-> Dispatcher        | Dispatcher -> Worker       | Notification |
+| `agent.create`              | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `agent.list`                | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `agent.get`                 | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `agent.describe`            | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `agent.update`              | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `agent.delete`              | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `agent.start`               | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `agent.stop`                | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `agent.restart`             | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `agent.logs`                | CLI <-> Daemon               | CLI -> Daemon              | Request (streaming) |
+| `agent.exec`                | CLI <-> Daemon               | CLI -> Daemon              | Request (streaming) |
+| `agent.attach`              | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `agent.chat.send`           | CLI <-> Daemon               | CLI -> Daemon              | Request (streaming) |
+| `channel.create`            | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `channel.list`              | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `channel.get`               | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `channel.delete`            | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `channel.attach`            | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `channel.detach`            | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `daemon.ping`               | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `daemon.shutdown`           | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `daemon.status`             | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `status.get`                | CLI <-> Daemon               | CLI -> Daemon              | Request      |
+| `agent.log_line`            | CLI <-> Daemon               | Daemon -> CLI              | Notification |
+| `agent.exec.chunk`          | CLI <-> Daemon               | Daemon -> CLI              | Notification |
+| `agent.chat.chunk`          | CLI <-> Daemon               | Daemon -> CLI              | Notification |
 
 ### 12.2 Message Counts by Boundary
 
@@ -1524,8 +1606,9 @@ Protocol version 2 may introduce request multiplexing (multiple in-flight reques
 | Channel Plugin <-> Main Agent | 4        | 3             | 7     |
 | Main Agent <-> Dispatcher     | 6        | 3             | 9     |
 | Worker <-> Dispatcher         | 4        | 2             | 6     |
+| CLI <-> Daemon                | 23       | 3             | 26    |
 | Handshake (all boundaries)    | 1        | 0             | 1     |
-| **Total**                     | **15**   | **8**         | **23**|
+| **Total**                     | **38**   | **11**        | **49**|
 
 ### 12.3 Worker Lifecycle State Machine
 
@@ -1533,11 +1616,14 @@ Protocol version 2 may introduce request multiplexing (multiple in-flight reques
 
 ### 12.4 Socket Path Summary
 
-| Socket Path                                   | Listener   | Connector       |
-|-----------------------------------------------|------------|-----------------|
-| `/var/run/dclaw/channel-<plugin_name>.sock`   | Main Agent | Channel Plugin  |
-| `/var/run/dclaw/dispatcher.sock`              | Dispatcher | Main Agent      |
-| `/var/run/dclaw/worker-<worker_id>.sock`      | Dispatcher | Worker          |
+All sockets are user-owned (no root/sudo). Linux prefers `$XDG_RUNTIME_DIR` and falls back to `~/.dclaw/`; macOS uses `~/.dclaw/` directly.
+
+| Socket Path (Linux, XDG set)                         | Fallback / macOS                            | Listener   | Connector       |
+|------------------------------------------------------|---------------------------------------------|------------|-----------------|
+| `$XDG_RUNTIME_DIR/dclaw.sock`                        | `~/.dclaw/dclaw.sock`                       | Dispatcher | CLI / TUI       |
+| `$XDG_RUNTIME_DIR/dclaw-channel-<plugin_name>.sock`  | `~/.dclaw/channel-<plugin_name>.sock`       | Main Agent | Channel Plugin  |
+| `$XDG_RUNTIME_DIR/dclaw-dispatcher.sock`             | `~/.dclaw/dispatcher.sock`                  | Dispatcher | Main Agent      |
+| `$XDG_RUNTIME_DIR/dclaw-worker-<worker_id>.sock`     | `~/.dclaw/worker-<worker_id>.sock`          | Dispatcher | Worker          |
 
 ### 12.5 Error Code Summary
 

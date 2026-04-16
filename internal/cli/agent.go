@@ -1,21 +1,20 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/itsmehatef/dclaw/internal/client"
 )
 
 var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Manage agents (create, list, start, stop, ...)",
-	Long: `Manage dclaw agents.
-
-An agent is a named, long-lived resource backed by a Docker container running
-pi-mono. Agents are the primary unit of work in dclaw.
-
-All subcommands currently require the dclaw daemon, which is not yet
-implemented. They exit with code 69 (EX_UNAVAILABLE) in v0.2.0-cli.`,
+	Long:  `Manage dclaw agents.`,
 }
 
 // ---------- create ----------
@@ -33,8 +32,23 @@ var agentCreateCmd = &cobra.Command{
 	Short: "Create an agent",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Flag validation would go here in v0.3+. For now, the daemon is missing.
-		return RequireDaemon(cmd, "dclaw agent create")
+		ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+		defer cancel()
+		return withClient(ctx, func(c *client.RPCClient) error {
+			a := client.Agent{
+				Name:      args[0],
+				Image:     agentCreateImage,
+				Channel:   agentCreateChannel,
+				Workspace: agentCreateWorkspace,
+				Env:       kvSliceToMap(agentCreateEnv),
+				Labels:    kvSliceToMap(agentCreateLabel),
+			}
+			if err := c.AgentCreate(ctx, a); err != nil {
+				return HandleRPCError(cmd, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "agent %s created\n", args[0])
+			return nil
+		})
 	},
 }
 
@@ -48,7 +62,15 @@ var agentListCmd = &cobra.Command{
 		if err := validateOutputFormat(); err != nil {
 			return err
 		}
-		return RequireDaemon(cmd, "dclaw agent list")
+		ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+		defer cancel()
+		return withClient(ctx, func(c *client.RPCClient) error {
+			agents, err := c.AgentList(ctx)
+			if err != nil {
+				return HandleRPCError(cmd, err)
+			}
+			return PrintAgents(cmd.OutOrStdout(), agents)
+		})
 	},
 }
 
@@ -62,7 +84,15 @@ var agentGetCmd = &cobra.Command{
 		if err := validateOutputFormat(); err != nil {
 			return err
 		}
-		return RequireDaemon(cmd, "dclaw agent get")
+		ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+		defer cancel()
+		return withClient(ctx, func(c *client.RPCClient) error {
+			a, err := c.AgentGet(ctx, args[0])
+			if err != nil {
+				return HandleRPCError(cmd, err)
+			}
+			return PrintAgent(cmd.OutOrStdout(), a)
+		})
 	},
 }
 
@@ -73,7 +103,31 @@ var agentDescribeCmd = &cobra.Command{
 	Short: "Describe an agent in human-readable form",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RequireDaemon(cmd, "dclaw agent describe")
+		ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+		defer cancel()
+		return withClient(ctx, func(c *client.RPCClient) error {
+			a, err := c.AgentGet(ctx, args[0])
+			if err != nil {
+				return HandleRPCError(cmd, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Name:      %s\n", a.Name)
+			fmt.Fprintf(cmd.OutOrStdout(), "Image:     %s\n", a.Image)
+			fmt.Fprintf(cmd.OutOrStdout(), "Status:    %s\n", a.Status)
+			fmt.Fprintf(cmd.OutOrStdout(), "Workspace: %s\n", a.Workspace)
+			if len(a.Env) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "Env:")
+				for k, v := range a.Env {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s=%s\n", k, v)
+				}
+			}
+			if len(a.Labels) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "Labels:")
+				for k, v := range a.Labels {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s=%s\n", k, v)
+				}
+			}
+			return nil
+		})
 	},
 }
 
@@ -93,7 +147,21 @@ var agentUpdateCmd = &cobra.Command{
 		if agentUpdateImage == "" && len(agentUpdateEnv) == 0 && len(agentUpdateLabel) == 0 {
 			return fmt.Errorf("at least one of --image, --env, --label must be provided")
 		}
-		return RequireDaemon(cmd, "dclaw agent update")
+		ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+		defer cancel()
+		return withClient(ctx, func(c *client.RPCClient) error {
+			a := client.Agent{
+				Name:   args[0],
+				Image:  agentUpdateImage,
+				Env:    kvSliceToMap(agentUpdateEnv),
+				Labels: kvSliceToMap(agentUpdateLabel),
+			}
+			if err := c.AgentUpdate(ctx, a); err != nil {
+				return HandleRPCError(cmd, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "agent %s updated\n", args[0])
+			return nil
+		})
 	},
 }
 
@@ -105,7 +173,15 @@ var agentDeleteCmd = &cobra.Command{
 	Short:   "Delete an agent",
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RequireDaemon(cmd, "dclaw agent delete")
+		ctx, cancel := context.WithTimeout(cmd.Context(), 60*time.Second)
+		defer cancel()
+		return withClient(ctx, func(c *client.RPCClient) error {
+			if err := c.AgentDelete(ctx, args[0]); err != nil {
+				return HandleRPCError(cmd, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "agent %s deleted\n", args[0])
+			return nil
+		})
 	},
 }
 
@@ -116,7 +192,15 @@ var agentStartCmd = &cobra.Command{
 	Short: "Start an agent",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RequireDaemon(cmd, "dclaw agent start")
+		ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+		defer cancel()
+		return withClient(ctx, func(c *client.RPCClient) error {
+			if err := c.AgentStart(ctx, args[0]); err != nil {
+				return HandleRPCError(cmd, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "agent %s started\n", args[0])
+			return nil
+		})
 	},
 }
 
@@ -125,7 +209,15 @@ var agentStopCmd = &cobra.Command{
 	Short: "Stop an agent",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RequireDaemon(cmd, "dclaw agent stop")
+		ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+		defer cancel()
+		return withClient(ctx, func(c *client.RPCClient) error {
+			if err := c.AgentStop(ctx, args[0]); err != nil {
+				return HandleRPCError(cmd, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "agent %s stopped\n", args[0])
+			return nil
+		})
 	},
 }
 
@@ -134,7 +226,15 @@ var agentRestartCmd = &cobra.Command{
 	Short: "Restart an agent",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RequireDaemon(cmd, "dclaw agent restart")
+		ctx, cancel := context.WithTimeout(cmd.Context(), 60*time.Second)
+		defer cancel()
+		return withClient(ctx, func(c *client.RPCClient) error {
+			if err := c.AgentRestart(ctx, args[0]); err != nil {
+				return HandleRPCError(cmd, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "agent %s restarted\n", args[0])
+			return nil
+		})
 	},
 }
 
@@ -150,7 +250,18 @@ var agentLogsCmd = &cobra.Command{
 	Short: "Show logs for an agent",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RequireDaemon(cmd, "dclaw agent logs")
+		ctx, cancel := context.WithCancel(cmd.Context())
+		defer cancel()
+		return withClient(ctx, func(c *client.RPCClient) error {
+			ch, err := c.AgentLogs(ctx, args[0], agentLogsTail, agentLogsFollow)
+			if err != nil {
+				return HandleRPCError(cmd, err)
+			}
+			for line := range ch {
+				fmt.Fprintln(cmd.OutOrStdout(), line)
+			}
+			return nil
+		})
 	},
 }
 
@@ -166,13 +277,31 @@ var agentExecCmd = &cobra.Command{
 		if dash < 0 || dash >= len(args) {
 			return fmt.Errorf("usage: dclaw agent exec <name> -- <cmd>...")
 		}
-		// args[0..dash-1] is the name; args[dash..] is the command.
-		return RequireDaemon(cmd, "dclaw agent exec")
+		name := args[0]
+		argv := args[dash:]
+
+		ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
+		defer cancel()
+		return withClient(ctx, func(c *client.RPCClient) error {
+			// Wire stdio sinks.
+			client.ExecStdoutWriter = cmd.OutOrStdout()
+			client.ExecStderrWriter = cmd.ErrOrStderr()
+			code, err := c.AgentExec(ctx, name, argv)
+			if err != nil {
+				return HandleRPCError(cmd, err)
+			}
+			os.Exit(code)
+			return nil
+		})
 	},
 }
 
+// ---------- attach (NEW) ----------
+// agent_attach.go is deferred to alpha.2 (requires internal/tui).
+
+// ---------- init ----------
+
 func init() {
-	// create
 	agentCreateCmd.Flags().StringVar(&agentCreateImage, "image", "", "container image for the agent (required)")
 	agentCreateCmd.Flags().StringVar(&agentCreateChannel, "channel", "", "channel to bind to")
 	agentCreateCmd.Flags().StringVar(&agentCreateWorkspace, "workspace", "", "host path to bind as /workspace")
@@ -180,12 +309,10 @@ func init() {
 	agentCreateCmd.Flags().StringArrayVar(&agentCreateLabel, "label", nil, "set label KEY=VAL (repeatable)")
 	_ = agentCreateCmd.MarkFlagRequired("image")
 
-	// update
 	agentUpdateCmd.Flags().StringVar(&agentUpdateImage, "image", "", "new container image")
 	agentUpdateCmd.Flags().StringArrayVar(&agentUpdateEnv, "env", nil, "set env var KEY=VAL (repeatable)")
 	agentUpdateCmd.Flags().StringArrayVar(&agentUpdateLabel, "label", nil, "set label KEY=VAL (repeatable)")
 
-	// logs
 	agentLogsCmd.Flags().BoolVarP(&agentLogsFollow, "follow", "f", false, "stream new log output")
 	agentLogsCmd.Flags().IntVar(&agentLogsTail, "tail", 100, "number of lines to show from the end of the logs")
 
@@ -202,4 +329,17 @@ func init() {
 		agentLogsCmd,
 		agentExecCmd,
 	)
+}
+
+func kvSliceToMap(items []string) map[string]string {
+	out := make(map[string]string, len(items))
+	for _, kv := range items {
+		for i := 0; i < len(kv); i++ {
+			if kv[i] == '=' {
+				out[kv[:i]] = kv[i+1:]
+				break
+			}
+		}
+	}
+	return out
 }
