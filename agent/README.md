@@ -1,6 +1,15 @@
 # dclaw-agent (Phase 1)
 
-A Docker container that runs pi-mono's coding agent headlessly. Give it a prompt, get a response, exit.
+A Docker container that runs pi-mono's coding agent. Supports two modes:
+persistent (default) for `dclaw` chat/exec dispatch, and one-shot for direct
+prompt-in/response-out runs.
+
+**Image contract:** the container's PID 1 must be long-running. dclaw execs
+into running containers to dispatch chat messages via `pi -p --no-session`, so
+the default `CMD` is `tail -f /dev/null` — tini stays as PID 1 for signal
+handling and zombie reaping, and the container stays up until `dclaw agent
+stop` (or `docker stop`). A container whose entrypoint exits immediately will
+be rejected by `dclaw agent start` with a clear error.
 
 ## Build
 
@@ -12,12 +21,24 @@ Produces `dclaw-agent:v0.1` locally. First build takes ~2 minutes (apt + npm); s
 
 ## Run
 
+Persistent mode (what `dclaw agent start` uses):
+
+```bash
+docker run -d --name my-agent \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -v "$(pwd):/workspace" \
+  dclaw-agent:v0.1
+# then: docker exec my-agent pi -p --no-session "your prompt here"
+```
+
+One-shot mode (overrides `CMD` to run pi and exit):
+
 ```bash
 docker run --rm \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -v "$(pwd):/workspace" \
   dclaw-agent:v0.1 \
-  "your prompt here"
+  node /app/run.mjs "your prompt here"
 ```
 
 The agent can read, write, edit, and run bash commands inside the container. It cannot see anything outside `/workspace` except the container's own rootfs. It can reach the Anthropic API but nothing else (in Phase 1; firewall allowlist is Phase 2).

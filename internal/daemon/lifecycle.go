@@ -195,6 +195,22 @@ func (l *Lifecycle) AgentStart(ctx context.Context, name string) error {
 	if err := l.docker.StartAgent(ctx, rec.ContainerID); err != nil {
 		return fmt.Errorf("docker start: %w", err)
 	}
+
+	// Liveness poll: a bad image entrypoint (one-shot script) will exit
+	// immediately; surface that loudly instead of flipping the DB to running
+	// and leaving chat to fail silently on a stopped container.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status, _ := l.docker.InspectStatus(ctx, rec.ContainerID)
+		if status == "exited" || status == "dead" || status == "oomkilled" {
+			return fmt.Errorf("agent %q started but container exited immediately — verify the image entrypoint is long-running (see agent/README.md)", name)
+		}
+		if status == "running" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	rec.Status = "running"
 	rec.UpdatedAt = time.Now().Unix()
 	if err := l.repo.UpdateAgent(ctx, rec); err != nil {

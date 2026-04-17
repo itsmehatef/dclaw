@@ -51,5 +51,9 @@ COPY --chown=node:node package.json /app/package.json
 
 ENV PATH=/app/node_modules/.bin:$PATH
 
-# tini forwards SIGTERM/SIGINT to Node and reaps zombies.
-ENTRYPOINT ["/usr/bin/tini", "--", "node", "/app/run.mjs"]
+# tini forwards SIGTERM/SIGINT and reaps zombies.
+# CMD keeps PID 1 alive so dclaw can `docker exec pi -p --no-session <msg>`
+# into a persistent container. One-shot mode is still supported by overriding
+# CMD at run time, e.g. `docker run --rm dclaw-agent:v0.1 node /app/run.mjs "prompt"`.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["tail", "-f", "/dev/null"]

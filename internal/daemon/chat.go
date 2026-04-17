@@ -77,17 +77,31 @@ func (h *ChatHandler) Handle(
 		return err
 	}
 
+	// Readiness check: `docker exec` against a stopped container silently
+	// fails, so surface a clean chat error instead of a confusing empty chunk.
+	status, statErr := h.docker.InspectStatus(ctx, rec.ContainerID)
+	if statErr != nil || status != "running" {
+		shown := status
+		if statErr != nil {
+			shown = "unknown"
+		}
+		notRunning := protocol.AgentChatChunkNotification{
+			Name:      req.Name,
+			Role:      "error",
+			Text:      fmt.Sprintf("agent not running (container state: %s) — did you run 'dclaw agent start %s'?", shown, req.Name),
+			Sequence:  0,
+			Final:     true,
+			MessageID: msgID,
+		}
+		return send(protocol.Notification("agent.chat.chunk", notRunning))
+	}
+
 	h.log.Debug("chat exec start", "agent", req.Name, "msg_id", msgID)
 
 	// Alpha.3: synchronous exec — one final chunk.
 	// Beta.1: replace with ExecInStream (true line-by-line via docker attach).
 	argv := []string{"pi", "-p", "--no-session", req.Content}
-	stdout, stderr, _, execErr := h.docker.ExecIn(ctx, rec.ContainerID, argv)
-
-	text := stdout
-	if text == "" {
-		text = stderr
-	}
+	stdout, stderr, exitCode, execErr := h.docker.ExecIn(ctx, rec.ContainerID, argv)
 
 	if execErr != nil {
 		errChunk := protocol.AgentChatChunkNotification{
@@ -101,6 +115,26 @@ func (h *ChatHandler) Handle(
 		return send(protocol.Notification("agent.chat.chunk", errChunk))
 	}
 
+	if exitCode != 0 {
+		errText := stderr
+		if errText == "" {
+			errText = stdout
+		}
+		failChunk := protocol.AgentChatChunkNotification{
+			Name:      req.Name,
+			Role:      "error",
+			Text:      fmt.Sprintf("pi exited with code %d: %s", exitCode, errText),
+			Sequence:  0,
+			Final:     true,
+			MessageID: msgID,
+		}
+		return send(protocol.Notification("agent.chat.chunk", failChunk))
+	}
+
+	text := stdout
+	if text == "" {
+		text = stderr
+	}
 	finalChunk := protocol.AgentChatChunkNotification{
 		Name:      req.Name,
 		Role:      "agent",
