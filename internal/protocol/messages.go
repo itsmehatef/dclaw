@@ -419,3 +419,38 @@ type WorkerMessageFromMain struct {
 type WorkerKillSignal struct {
 	Reason string `json:"reason"` // timeout|user_killed|quota_exceeded
 }
+
+// ---------- agent.chat.send / agent.chat.chunk (Boundary 4, alpha.3) ----------
+
+// AgentChatSendParams is the request body for `agent.chat.send`.
+// name matches the agent-by-name convention used by all Boundary 4 methods.
+// parent_id is the content-addressed ID of the previous message in the thread;
+// empty string means "new conversation". message_id is pre-computed by the
+// caller as hex(sha256(name|parent_id|content)); the daemon echoes it back.
+type AgentChatSendParams struct {
+	Name      string `json:"name"`
+	Content   string `json:"content"`
+	ParentID  string `json:"parent_id,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
+}
+
+// AgentChatSendResult is the synchronous ack returned before any chunks are
+// sent. The daemon sends this as the JSON-RPC response to agent.chat.send,
+// then follows it with agent.chat.chunk notifications on the same connection.
+type AgentChatSendResult struct {
+	MessageID  string `json:"message_id"`
+	AcceptedAt string `json:"accepted_at"` // RFC 3339
+}
+
+// AgentChatChunkNotification is the payload of an `agent.chat.chunk`
+// notification. The daemon sends a stream of these on the connection that
+// received agent.chat.send. The last chunk in a stream has Final set to true.
+// Sequence is monotonically increasing from 0 within a single send.
+type AgentChatChunkNotification struct {
+	Name      string `json:"name"`
+	Role      string `json:"role"`      // "agent" | "system" | "error"
+	Text      string `json:"text"`      // delta text for this chunk
+	Sequence  int    `json:"sequence"`
+	Final     bool   `json:"final"`
+	MessageID string `json:"message_id,omitempty"`
+}

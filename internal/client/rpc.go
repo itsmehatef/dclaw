@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -382,4 +383,147 @@ func wireToAgent(a protocol.Agent) Agent {
 		Labels:    a.Labels,
 		Status:    a.Status,
 	}
+}
+
+// ---------- Chat streaming (alpha.3) ----------
+
+// ChatChunkEvent is one event delivered on the channel returned by ChatSend.
+// When Final is true the channel is closed immediately after this event.
+// When Err is non-nil the stream broke before Final arrived.
+type ChatChunkEvent struct {
+	Role      string // "agent" | "system" | "error"
+	Text      string // incremental delta text
+	Sequence  int
+	Final     bool
+	MessageID string
+	Err       error
+}
+
+// ChatSend sends agent.chat.send to the daemon and returns a channel that
+// yields agent.chat.chunk notifications until Final=true or ctx is cancelled.
+//
+// ChatSend opens a SECOND dedicated connection for the stream so it does not
+// contend with the shared encoder/decoder on the primary connection. The
+// dedicated connection is closed when the channel drains or ctx is cancelled.
+func (c *RPCClient) ChatSend(ctx context.Context, agentName, content, parentID string) (<-chan ChatChunkEvent, error) {
+	msgID := chatMessageID(agentName, parentID, content)
+
+	// Dial dedicated stream connection.
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", c.socket)
+	if err != nil {
+		return nil, fmt.Errorf("chat dial: %w", err)
+	}
+
+	dec := json.NewDecoder(conn)
+	enc := json.NewEncoder(conn)
+
+	// Handshake on dedicated connection.
+	hsParams, _ := json.Marshal(protocol.Handshake{
+		ProtocolVersion:  protocol.Version,
+		ComponentType:    protocol.ComponentType("cli"),
+		ComponentVersion: version.Version,
+		ComponentID:      uuid.NewString(),
+	})
+	hsEnv := protocol.Envelope{
+		JSONRPC: "2.0",
+		Method:  "dclaw.handshake",
+		ID:      int64(1),
+	}
+	hsEnv.Params = hsParams
+	if err := enc.Encode(&hsEnv); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("chat handshake send: %w", err)
+	}
+	var hsResp protocol.Envelope
+	if err := dec.Decode(&hsResp); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("chat handshake recv: %w", err)
+	}
+	if hsResp.Error != nil {
+		conn.Close()
+		return nil, fmt.Errorf("chat handshake rejected: %s", hsResp.Error.Message)
+	}
+
+	// Send agent.chat.send.
+	reqEnv := protocol.Request(2, "agent.chat.send", protocol.AgentChatSendParams{
+		Name:      agentName,
+		Content:   content,
+		ParentID:  parentID,
+		MessageID: msgID,
+	})
+	if err := enc.Encode(reqEnv); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("chat send: %w", err)
+	}
+
+	// Read the synchronous ack response (JSON-RPC result for id=2).
+	var ackEnv protocol.Envelope
+	if err := dec.Decode(&ackEnv); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("chat ack recv: %w", err)
+	}
+	if ackEnv.Error != nil {
+		conn.Close()
+		return nil, ackEnv.Error
+	}
+
+	// Drain agent.chat.chunk notifications asynchronously.
+	ch := make(chan ChatChunkEvent, 64)
+	go func() {
+		defer conn.Close()
+		defer close(ch)
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			var env protocol.Envelope
+			if err := dec.Decode(&env); err != nil {
+				select {
+				case ch <- ChatChunkEvent{Err: fmt.Errorf("stream read: %w", err)}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			if env.Method != "agent.chat.chunk" {
+				continue
+			}
+			var chunk protocol.AgentChatChunkNotification
+			if err := json.Unmarshal(env.Params, &chunk); err != nil {
+				select {
+				case ch <- ChatChunkEvent{Err: fmt.Errorf("chunk decode: %w", err)}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			event := ChatChunkEvent{
+				Role:      chunk.Role,
+				Text:      chunk.Text,
+				Sequence:  chunk.Sequence,
+				Final:     chunk.Final,
+				MessageID: chunk.MessageID,
+			}
+			select {
+			case ch <- event:
+			case <-ctx.Done():
+				return
+			}
+			if chunk.Final {
+				return
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
+// chatMessageID computes the content-addressed ID for a chat message.
+// ID = lower-hex( sha256( agentName + "|" + parentID + "|" + content ) )
+func chatMessageID(agentName, parentID, content string) string {
+	h := sha256.New()
+	h.Write([]byte(agentName))
+	h.Write([]byte("|"))
+	h.Write([]byte(parentID))
+	h.Write([]byte("|"))
+	h.Write([]byte(content))
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
