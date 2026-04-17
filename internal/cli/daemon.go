@@ -69,8 +69,12 @@ var daemonStartCmd = &cobra.Command{
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			if _, err := os.Stat(cfg.SocketPath); err == nil {
+				pid, _ := cfg.ReadPIDFile()
+				if pid <= 0 {
+					pid = daemonProc.Process.Pid // fallback to the forked PID if pidfile not yet written
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "dclaw daemon started (pid %d, socket %s)\n",
-					daemonProc.Process.Pid, cfg.SocketPath)
+					pid, cfg.SocketPath)
 				return nil
 			}
 			time.Sleep(100 * time.Millisecond)

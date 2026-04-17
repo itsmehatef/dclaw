@@ -48,4 +48,52 @@ echo "--- Test 7: daemon stop ---"
 "$DCLAW_BIN" --daemon-socket "$SOCKET" daemon stop || fail "stop"
 pass "daemon stop"
 
+# ---- NEGATIVE PATH TESTS ----
+# These tests verify that the daemon and CLI return proper errors for invalid
+# operations. Each test restarts the daemon in a fresh STATE_DIR because some
+# negative paths leave the daemon in a broken state.
+
+echo "--- Test 8: duplicate agent name is rejected ---"
+# Restart daemon for this test.
+STATE_DIR_NEG=$(mktemp -d -t dclaw-smoke-neg-XXXX)
+SOCKET_NEG="$STATE_DIR_NEG/dclaw.sock"
+"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" daemon start || fail "neg-start"
+"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" agent create dup \
+  --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_NEG" || fail "dup-create-1"
+if "$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" agent create dup \
+  --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_NEG" 2>/dev/null; then
+  fail "duplicate agent name should have been rejected"
+fi
+"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" daemon stop >/dev/null 2>&1 || true
+rm -rf "$STATE_DIR_NEG"
+pass "duplicate agent name rejected"
+
+echo "--- Test 9: get non-existent agent returns error ---"
+STATE_DIR_NEG2=$(mktemp -d -t dclaw-smoke-neg2-XXXX)
+SOCKET_NEG2="$STATE_DIR_NEG2/dclaw.sock"
+"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG2" daemon start || fail "neg2-start"
+if "$DCLAW_BIN" --daemon-socket "$SOCKET_NEG2" agent get nosuchagent 2>/dev/null; then
+  fail "get non-existent agent should have failed"
+fi
+"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG2" daemon stop >/dev/null 2>&1 || true
+rm -rf "$STATE_DIR_NEG2"
+pass "get non-existent agent returned error"
+
+echo "--- Test 10: daemon already-running is idempotent ---"
+STATE_DIR_NEG3=$(mktemp -d -t dclaw-smoke-neg3-XXXX)
+SOCKET_NEG3="$STATE_DIR_NEG3/dclaw.sock"
+"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG3" daemon start || fail "neg3-start-1"
+# Starting again should print "already running" and exit 0, not error.
+"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG3" daemon start || fail "neg3-start-2 (idempotent start failed)"
+"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG3" daemon stop >/dev/null 2>&1 || true
+rm -rf "$STATE_DIR_NEG3"
+pass "daemon start is idempotent"
+
+echo "--- Test 11: daemon CLI fails gracefully when daemon is not running ---"
+BAD_SOCKET="/tmp/dclaw-smoke-notexist-$$.sock"
+OUT=$("$DCLAW_BIN" --daemon-socket "$BAD_SOCKET" agent list 2>&1 || true)
+echo "$OUT" | grep -qi "not running\|no such file\|connection refused\|dial" \
+  || fail "expected daemon-not-running error, got: $OUT"
+pass "CLI fails gracefully when daemon not running"
+
 echo "All daemon smoke tests passed."
