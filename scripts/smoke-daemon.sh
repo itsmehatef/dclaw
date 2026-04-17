@@ -96,4 +96,17 @@ echo "$OUT" | grep -qi "not running\|no such file\|connection refused\|dial" \
   || fail "expected daemon-not-running error, got: $OUT"
 pass "CLI fails gracefully when daemon not running"
 
+echo "--- Test 12: agent chat RPC smoke (exec proxy) ---"
+STATE_DIR_CHAT=$(mktemp -d -t dclaw-smoke-chat-XXXX)
+SOCKET_CHAT="$STATE_DIR_CHAT/dclaw.sock"
+"$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" daemon start || fail "chat-start"
+"$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" agent create chatbot \
+  --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_CHAT" || fail "chat-create"
+"$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" agent start chatbot || fail "chat-agent-start"
+OUT=$("$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" agent exec chatbot -- echo "smoke-ok" 2>&1)
+echo "$OUT" | grep -q "smoke-ok" || fail "expected 'smoke-ok' in exec output, got: $OUT"
+"$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" daemon stop >/dev/null 2>&1 || true
+rm -rf "$STATE_DIR_CHAT"
+pass "agent chat RPC smoke"
+
 echo "All daemon smoke tests passed."

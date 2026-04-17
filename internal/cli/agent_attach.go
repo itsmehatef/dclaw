@@ -6,17 +6,17 @@ import (
 	"github.com/itsmehatef/dclaw/internal/tui"
 )
 
-// agentAttachCmd opens the TUI pre-focused on the detail view for the named
-// agent. Chat mode is alpha.3 scope; for alpha.2 attach lands on ViewDetail.
+// agentAttachCmd opens the TUI in chat mode for the named agent.
+// As of alpha.3, attach opens ViewChat directly.
 var agentAttachCmd = &cobra.Command{
 	Use:   "attach <name>",
-	Short: "Open the TUI focused on a specific agent (detail view)",
-	Long: `Attach opens the dclaw TUI pre-focused on the named agent's detail view.
+	Short: "Open the TUI in chat mode for a specific agent",
+	Long: `Attach opens the dclaw TUI pre-focused on the named agent's chat view.
 
-In alpha.3, 'c' from detail will open the chat pane.
-For alpha.2, this is equivalent to: dclaw; then navigate to the agent; then press enter.`,
+Press 'esc' to return to the agent list. Use 'ctrl+c' to cancel a streaming
+response. Press 'enter' to send; 'shift+enter' for a newline.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return tui.RunAttached(daemonSocket, args[0])
+		return tui.RunChatAttached(daemonSocket, args[0])
 	},
 }
