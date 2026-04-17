@@ -12,42 +12,40 @@ import (
 	"github.com/itsmehatef/dclaw/internal/tui/views"
 )
 
-// Model is the root bubbletea.Model for the dclaw TUI. It owns the entire
-// application state and dispatches all messages to the appropriate sub-model.
-// The single-model design avoids nested Update loops and makes state
-// transitions explicit.
+// Model is the root bubbletea.Model for the dclaw TUI.
 type Model struct {
 	ctx context.Context
 	rpc *client.RPCClient
 
-	// current view
-	current views.View
+	current  views.View
+	prevView views.View // view to return to when leaving ViewChat
 
-	// sub-models
 	list     views.ListModel
 	detail   views.DetailModel
 	desc     views.DescribeModel
 	help     views.HelpModel
 	noDaemon views.NoDaemonModel
+	chat     views.ChatModel
 
-	// chrome
 	width  int
 	height int
 
-	// selection: the name of the currently selected agent
-	selected string
+	selected string // name of the currently selected agent
 
-	// keys
+	streaming    bool
+	streamCancel context.CancelFunc                // non-nil when a stream is active
+	streamCh     <-chan client.ChatChunkEvent      // active stream channel; nil when not streaming
+
 	keys KeyMap
 }
 
-// attachTarget carries an optional pre-selected agent for RunAttached().
-// If non-nil, the TUI starts on ViewDetail for that agent instead of ViewList.
+// attachTarget carries an optional pre-selected agent for Run* entry points.
 type attachTarget struct {
 	agentName string
+	startChat bool // if true, open ViewChat; otherwise ViewDetail
 }
 
-// NewModel constructs the root Model. target is nil for a bare TUI launch.
+// NewModel constructs the root Model.
 func NewModel(ctx context.Context, rpc *client.RPCClient, target *attachTarget) *Model {
 	m := &Model{
 		ctx:      ctx,
@@ -58,30 +56,35 @@ func NewModel(ctx context.Context, rpc *client.RPCClient, target *attachTarget) 
 		desc:     views.NewDescribeModel(),
 		help:     views.NewHelpModel(),
 		noDaemon: views.NewNoDaemonModel(nil),
+		chat:     views.NewChatModel(),
 		keys:     DefaultKeys(),
 	}
 	if target != nil {
 		m.selected = target.agentName
-		m.current = views.ViewDetail
+		if target.startChat {
+			m.current = views.ViewChat
+			m.prevView = views.ViewList
+			m.chat.SetAgent(target.agentName)
+		} else {
+			m.current = views.ViewDetail
+		}
 	}
 	return m
 }
 
 // Init sends the first fetch and schedules the poll timer.
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(
-		fetchAgents(m.ctx, m.rpc),
-		tickPoll(),
-	)
+	return tea.Batch(fetchAgents(m.ctx, m.rpc), tickPoll())
 }
 
-// Update dispatches incoming messages to the appropriate handler.
+// Update dispatches incoming messages.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.chat.SetSize(msg.Width, m.chatHeight())
 		return m, nil
 
 	case tea.KeyMsg:
@@ -89,7 +92,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agentsLoadedMsg:
 		m.list.SetAgents(msg.agents)
-		// If we're on ViewNoDaemon and a load succeeded, restore ViewList.
 		if m.current == views.ViewNoDaemon {
 			m.current = views.ViewList
 		}
@@ -101,14 +103,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickPoll()
 
 	case pollTickMsg:
-		// Route poll to the appropriate fetch based on current view.
+		// While in ViewChat, skip fetching but keep the tick alive so
+		// polling resumes normally when the user leaves.
+		if m.current == views.ViewChat {
+			return m, tickPoll()
+		}
 		switch m.current {
 		case views.ViewDetail:
 			if m.selected != "" {
 				return m, fetchAgent(m.ctx, m.rpc, m.selected)
 			}
 		case views.ViewDescribe:
-			// Describe is one-shot: no background refresh.
 			return m, nil
 		default:
 			return m, fetchAgents(m.ctx, m.rpc)
@@ -122,21 +127,64 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case retryMsg:
 		return m, retryDial(m.ctx, m.rpc)
+
+	// chat events
+
+	case chatStreamOpenedMsg:
+		m.streaming = true
+		m.streamCh = msg.chunks
+		m.chat.SetStreaming(true)
+		return m, drainChatStream(m.streamCh)
+
+	case chatDeltaMsg:
+		m.chat.AppendChunk(msg.chunk)
+		if msg.chunk.Final {
+			m.streaming = false
+			m.streamCh = nil
+			m.streamCancel = nil
+			m.chat.SetStreaming(false)
+			return m, nil
+		}
+		return m, drainChatStream(m.streamCh)
+
+	case chatErrorMsg:
+		if m.streamCancel != nil {
+			m.streamCancel()
+			m.streamCancel = nil
+		}
+		m.streaming = false
+		m.streamCh = nil
+		m.chat.SetStreaming(false)
+		m.chat.AppendError(msg.err)
+		return m, nil
+
+	case chatStreamClosedMsg:
+		m.streaming = false
+		m.streamCh = nil
+		m.chat.SetStreaming(false)
+		return m, nil
+
+	case chatAckedMsg:
+		return m, nil // reserved for beta.1 persistence hook
+	}
+
+	// Forward non-key msgs to chat textarea when in ViewChat.
+	if m.current == views.ViewChat {
+		var cmd tea.Cmd
+		m.chat, cmd = m.chat.Update(msg)
+		return m, cmd
 	}
 
 	return m, nil
 }
 
-// View renders the full terminal output: top bar + main pane + bottom bar.
-// When the help overlay is active it replaces everything.
+// View renders the full terminal output.
 func (m *Model) View() string {
 	if m.help.Active() {
 		return m.renderChrome("help", m.help.View(m.width, m.height-2))
 	}
 
-	var main string
-	var viewName string
-
+	var main, viewName string
 	switch m.current {
 	case views.ViewList:
 		viewName = "agents"
@@ -150,44 +198,62 @@ func (m *Model) View() string {
 	case views.ViewNoDaemon:
 		viewName = "no-daemon"
 		main = m.noDaemon.View(m.width, m.height-2)
+	case views.ViewChat:
+		viewName = fmt.Sprintf("chat: %s", m.selected)
+		main = m.chat.View(m.width, m.height-2)
 	default:
 		viewName = "agents"
 		main = m.list.View(m.width, m.height-2)
 	}
-
 	return m.renderChrome(viewName, main)
 }
 
-// renderChrome wraps main content with the top bar and bottom bar.
+// renderChrome wraps main content with top/bottom bars.
 func (m *Model) renderChrome(viewName, main string) string {
 	agentCount := len(m.list.Items())
 	topContent := fmt.Sprintf("[%s]  daemon:ok  agents:%d", viewName, agentCount)
 	if m.current == views.ViewNoDaemon {
 		topContent = fmt.Sprintf("[%s]  daemon:DOWN", viewName)
 	}
+	if m.current == views.ViewChat && m.streaming {
+		topContent += "  streaming..."
+	}
 	top := TopBarStyle.Width(m.width).Render(topContent)
 
-	var hintParts []string
+	var hints []string
 	switch m.current {
 	case views.ViewList:
-		hintParts = []string{"↑↓/jk:nav", "enter:open", "r:refresh", "?:help", "q:quit"}
+		hints = []string{"↑↓/jk:nav", "enter:open", "c:chat", "r:refresh", "?:help", "q:quit"}
 	case views.ViewDetail:
-		hintParts = []string{"d:describe", "r:refresh", "esc:back", "?:help", "q:quit"}
+		hints = []string{"c:chat", "d:describe", "r:refresh", "esc:back", "?:help", "q:quit"}
 	case views.ViewDescribe:
-		hintParts = []string{"esc:back", "r:refresh", "?:help", "q:quit"}
+		hints = []string{"esc:back", "r:refresh", "?:help", "q:quit"}
 	case views.ViewNoDaemon:
-		hintParts = []string{"r:retry", "?:help", "q:quit"}
+		hints = []string{"r:retry", "?:help", "q:quit"}
+	case views.ViewChat:
+		if m.streaming {
+			hints = []string{"ctrl+c:cancel stream", "esc:blocked while streaming"}
+		} else {
+			hints = []string{"enter:send", "shift+enter:newline", "esc:back", "q:quit"}
+		}
 	default:
-		hintParts = []string{"?:help", "q:quit"}
+		hints = []string{"?:help", "q:quit"}
 	}
-	bottom := BottomBarStyle.Width(m.width).Render(strings.Join(hintParts, "  "))
-
+	bottom := BottomBarStyle.Width(m.width).Render(strings.Join(hints, "  "))
 	return lipgloss.JoinVertical(lipgloss.Left, top, main, bottom)
 }
 
-// handleKey dispatches keyboard events to the right view handler.
+// chatHeight returns height available for the chat sub-model.
+func (m *Model) chatHeight() int {
+	h := m.height - 2
+	if h < 4 {
+		return 4
+	}
+	return h
+}
+
+// handleKey dispatches keyboard events.
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Help overlay: any key except another '?' closes it on esc; '?' toggles it.
 	if m.help.Active() {
 		switch msg.String() {
 		case "?", "esc":
@@ -198,7 +264,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Global keys active in all non-help views.
+	if m.current == views.ViewChat {
+		return m.handleChatKey(msg)
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -206,7 +275,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help.Toggle()
 		return m, nil
 	case "r":
-		// Manual refresh: schedule an immediate fetch regardless of view.
 		switch m.current {
 		case views.ViewNoDaemon:
 			return m, func() tea.Msg { return retryMsg{} }
@@ -219,7 +287,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Per-view keys.
 	switch m.current {
 	case views.ViewList:
 		return m.handleListKey(msg)
@@ -227,8 +294,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDetailKey(msg)
 	case views.ViewDescribe:
 		return m.handleDescribeKey(msg)
-	case views.ViewNoDaemon:
-		// No additional keys beyond global r/q/?
 	}
 	return m, nil
 }
@@ -240,12 +305,14 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "k", "up":
 		m.list.Up()
 	case "enter":
-		name := m.list.SelectedName()
-		if name != "" {
+		if name := m.list.SelectedName(); name != "" {
 			m.selected = name
 			m.current = views.ViewDetail
-			// Kick an immediate fetch so the detail view is populated.
 			return m, fetchAgent(m.ctx, m.rpc, name)
+		}
+	case "c":
+		if name := m.list.SelectedName(); name != "" {
+			return m.openChat(name, views.ViewList)
 		}
 	}
 	return m, nil
@@ -260,6 +327,10 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.selected != "" {
 			m.current = views.ViewDescribe
 		}
+	case "c":
+		if m.selected != "" {
+			return m.openChat(m.selected, views.ViewDetail)
+		}
 	}
 	return m, nil
 }
@@ -270,4 +341,106 @@ func (m *Model) handleDescribeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.current = views.ViewDetail
 	}
 	return m, nil
+}
+
+func (m *Model) handleChatKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		if m.streaming {
+			if m.streamCancel != nil {
+				m.streamCancel()
+				m.streamCancel = nil
+			}
+			m.streaming = false
+			m.chat.SetStreaming(false)
+			return m, nil
+		}
+		return m, tea.Quit
+
+	case "esc", "backspace":
+		if m.streaming {
+			return m, nil // blocked while streaming
+		}
+		m.current = m.prevView
+		m.chat.Reset()
+		switch m.prevView {
+		case views.ViewDetail:
+			if m.selected != "" {
+				return m, fetchAgent(m.ctx, m.rpc, m.selected)
+			}
+		default:
+			return m, fetchAgents(m.ctx, m.rpc)
+		}
+		return m, nil
+
+	case "q":
+		if m.streaming {
+			return m, nil // swallow q while streaming
+		}
+		return m, tea.Quit
+
+	case "enter":
+		return m.handleChatEnter()
+
+	default:
+		var cmd tea.Cmd
+		m.chat, cmd = m.chat.Update(msg)
+		return m, cmd
+	}
+}
+
+// handleChatEnter fires when enter is pressed in the chat textarea.
+func (m *Model) handleChatEnter() (tea.Model, tea.Cmd) {
+	if m.streaming {
+		return m, nil
+	}
+	content := m.chat.SubmitInput()
+	if content == "" {
+		return m, nil
+	}
+	if m.rpc == nil {
+		m.chat.AppendError(fmt.Errorf("no daemon connection"))
+		return m, nil
+	}
+	parentID := m.chat.LastMessageID()
+	agentName := m.selected
+
+	streamCtx, cancel := context.WithCancel(m.ctx)
+	m.streamCancel = cancel
+	m.chat.AppendUserMessage(content)
+
+	return m, func() tea.Msg {
+		ch, err := m.rpc.ChatSend(streamCtx, agentName, content, parentID)
+		if err != nil {
+			cancel()
+			return chatErrorMsg{agentName: agentName, err: err}
+		}
+		return chatStreamOpenedMsg{agentName: agentName, chunks: ch}
+	}
+}
+
+// openChat transitions to ViewChat for the given agent.
+func (m *Model) openChat(agentName string, from views.View) (tea.Model, tea.Cmd) {
+	m.selected = agentName
+	m.prevView = from
+	m.current = views.ViewChat
+	m.chat.SetAgent(agentName)
+	m.chat.SetSize(m.width, m.chatHeight())
+	return m, nil
+}
+
+// drainChatStream returns a tea.Cmd that reads exactly one chunk from ch.
+// The caller (Update) stores the channel on m.streamCh and re-calls this
+// for each chunk until Final=true or the channel closes.
+func drainChatStream(ch <-chan client.ChatChunkEvent) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-ch
+		if !ok {
+			return chatStreamClosedMsg{}
+		}
+		if event.Err != nil {
+			return chatErrorMsg{err: event.Err}
+		}
+		return chatDeltaMsg{chunk: event}
+	}
 }

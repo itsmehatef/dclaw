@@ -16,4 +16,7 @@ const (
 	ViewDescribe
 	// ViewNoDaemon is shown when the daemon is not reachable.
 	ViewNoDaemon
+	// ViewChat is the interactive chat pane for a selected agent.
+	// Introduced in alpha.3.
+	ViewChat
 )
