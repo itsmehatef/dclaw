@@ -16,11 +16,12 @@ import (
 // organized by subject (agent.*, channel.*, daemon.*, worker.*). Unknown
 // methods yield JSON-RPC -32601 (method not found).
 type Router struct {
-	log      *slog.Logger
-	repo     *store.Repo
-	docker   *sandbox.DockerClient
-	lifecycle *Lifecycle
-	handlers map[string]handlerFunc
+	log         *slog.Logger
+	repo        *store.Repo
+	docker      *sandbox.DockerClient
+	lifecycle   *Lifecycle
+	handlers    map[string]handlerFunc
+	chatHandler *ChatHandler // streaming handler for agent.chat.send
 }
 
 type handlerFunc func(ctx context.Context, params json.RawMessage) (any, *protocol.RPCError)
@@ -62,15 +63,31 @@ func NewRouter(log *slog.Logger, repo *store.Repo, docker *sandbox.DockerClient)
 		"channel.detach": r.handleChannelDetach,
 	}
 
+	r.chatHandler = NewChatHandler(log, repo, docker)
+
 	return r
 }
 
-// Dispatch routes an incoming envelope to its handler and returns the response
-// envelope (or nil if the incoming message was a notification).
-func (r *Router) Dispatch(ctx context.Context, env *protocol.Envelope) *protocol.Envelope {
+// Dispatch routes an incoming envelope to its handler. For streaming methods
+// (agent.chat.send), the handler sends its own response via send and returns
+// nil to indicate no further response is needed. For all other methods, the
+// normal result/error response is returned.
+//
+// send is a function that writes one JSON-RPC envelope on the active
+// connection; it is provided by server.serveConn.
+func (r *Router) Dispatch(ctx context.Context, env *protocol.Envelope, send func(*protocol.Envelope) error) *protocol.Envelope {
 	if env.JSONRPC != "2.0" {
 		return protocol.ErrorResponse(env.ID, protocol.ErrInvalidRequest, "jsonrpc must be \"2.0\"", nil)
 	}
+
+	// Streaming methods handle their own response via send.
+	if env.Method == "agent.chat.send" {
+		if err := r.chatHandler.Handle(ctx, env.Params, env.ID, send); err != nil {
+			r.log.Warn("chat handler error", "err", err)
+		}
+		return nil
+	}
+
 	h, ok := r.handlers[env.Method]
 	if !ok {
 		if env.ID == nil {

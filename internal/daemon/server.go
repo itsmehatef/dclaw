@@ -129,6 +129,9 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 	s.log.Debug("handshake ok", "component", hreq.ComponentType, "id", hreq.ComponentID)
 
 	// 2. Main message loop.
+	send := func(env *protocol.Envelope) error {
+		return enc.Encode(env)
+	}
 	for {
 		if ctx.Err() != nil {
 			return
@@ -140,7 +143,7 @@ func (s *Server) serveConn(ctx context.Context, conn net.Conn) {
 			}
 			return
 		}
-		resp := s.router.Dispatch(ctx, &env)
+		resp := s.router.Dispatch(ctx, &env, send)
 		if resp != nil {
 			if err := enc.Encode(resp); err != nil {
 				return
