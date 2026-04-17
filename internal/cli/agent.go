@@ -328,6 +328,7 @@ func init() {
 		agentRestartCmd,
 		agentLogsCmd,
 		agentExecCmd,
+		agentAttachCmd, // alpha.2
 	)
 }
 

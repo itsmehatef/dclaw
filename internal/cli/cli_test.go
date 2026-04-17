@@ -13,6 +13,7 @@ func TestHelpDoesNotError(t *testing.T) {
 		"agent --help",
 		"agent create --help",
 		"agent list --help",
+		"agent attach --help",
 		"channel --help",
 		"daemon --help",
 		"status --help",

@@ -10,12 +10,14 @@ import (
 
 	"github.com/itsmehatef/dclaw/internal/client"
 	"github.com/itsmehatef/dclaw/internal/daemon"
+	"github.com/itsmehatef/dclaw/internal/tui"
 )
 
 var (
 	outputFormat string
 	daemonSocket string
 	verbose      bool
+	noMouse      bool
 )
 
 var rootCmd = &cobra.Command{
@@ -30,6 +32,12 @@ Run 'dclaw' with no arguments on an interactive terminal to open the TUI
 dashboard.`,
 	SilenceUsage:  true,
 	SilenceErrors: false,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if noMouse {
+			tui.NoMouse = true
+		}
+		return nil
+	},
 }
 
 // Execute is the main entry point called from cmd/dclaw/main.go.
@@ -50,6 +58,10 @@ func init() {
 		&verbose, "verbose", "v", false,
 		"verbose logging to stderr",
 	)
+	rootCmd.PersistentFlags().BoolVar(
+		&noMouse, "no-mouse", false,
+		"disable mouse support in the TUI (use on stock macOS Terminal.app)",
+	)
 
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(agentCmd)
@@ -67,8 +79,6 @@ func validateOutputFormat() error {
 	}
 }
 
-// defaultSocketPath resolves the default daemon socket path at process start.
-// Mirrors daemon.DefaultSocketPath so CLI and daemon agree.
 func defaultSocketPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -77,9 +87,6 @@ func defaultSocketPath() string {
 	return daemon.DefaultSocketPath(filepath.Join(home, ".dclaw"))
 }
 
-// newClient constructs an RPCClient at the resolved socket path. If the
-// daemon isn't listening, Dial will return an error that the caller can map
-// to exit 69.
 func newClient(ctx context.Context) (*client.RPCClient, error) {
 	c := client.NewRPCClient(daemonSocket)
 	if err := c.Dial(ctx); err != nil {
@@ -88,7 +95,6 @@ func newClient(ctx context.Context) (*client.RPCClient, error) {
 	return c, nil
 }
 
-// withClient is a helper: opens a client, runs fn, closes the client.
 func withClient(ctx context.Context, fn func(c *client.RPCClient) error) error {
 	c, err := newClient(ctx)
 	if err != nil {
