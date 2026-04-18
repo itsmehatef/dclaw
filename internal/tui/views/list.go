@@ -111,20 +111,6 @@ func humanAge(a client.Agent) string {
 	return "-"
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // humanDuration formats a time.Duration for display in the age column.
 // Exported for use in tests.
 func HumanDuration(d time.Duration) string {
