@@ -36,16 +36,23 @@ const reconcilerInterval = 2 * time.Second
 // The polling approach provides sufficient reliability for alpha.4 with
 // simpler code and no long-lived socket management.
 //
+// docker is the sandbox.DockerExecClient interface (not the concrete
+// *sandbox.DockerClient) so tests can inject a mock without a live Docker
+// daemon. The concrete type satisfies the interface automatically — no
+// constructor call-site changes needed.
+//
 // Graceful shutdown: the goroutine exits when its context is cancelled.
 // The daemon cancels the context on SIGTERM/SIGINT. No drain needed.
 type StatusReconciler struct {
 	log    *slog.Logger
 	repo   *store.Repo
-	docker *sandbox.DockerClient
+	docker sandbox.DockerExecClient
 }
 
-// NewStatusReconciler constructs a StatusReconciler.
-func NewStatusReconciler(log *slog.Logger, repo *store.Repo, docker *sandbox.DockerClient) *StatusReconciler {
+// NewStatusReconciler constructs a StatusReconciler. docker accepts any
+// DockerExecClient; pass a *sandbox.DockerClient in production, a mock in
+// tests.
+func NewStatusReconciler(log *slog.Logger, repo *store.Repo, docker sandbox.DockerExecClient) *StatusReconciler {
 	return &StatusReconciler{log: log, repo: repo, docker: docker}
 }
 
