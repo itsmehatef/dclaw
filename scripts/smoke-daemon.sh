@@ -3,6 +3,31 @@
 # Requires docker reachable on the host and dclaw-agent:v0.1 built (phase 1).
 set -euo pipefail
 
+# Isolate HOME so the smoke run does not touch the developer's real ~/.dclaw
+# state (state.db, pidfile, logs). Any dclaw/dclawd child process resolves
+# $HOME/.dclaw relative to this temp dir. Cleaned up on EXIT alongside STATE_DIR.
+# NOTE: this MUST happen before any dclaw invocation below.
+export HOME
+HOME=$(mktemp -d -t dclaw-smoke-home-XXXXXXXX)
+
+# Smoke-test agent names created across Tests 3-13. The `smoke-` prefix keeps
+# them distinct from any user-managed agents (which get the `dclaw-` prefix on
+# the container side — see internal/daemon/lifecycle.go). Cleaned up at startup
+# AND on EXIT to prevent stale containers from prior crashed runs causing
+# false "name already in use" failures.
+#
+# The container name the daemon actually creates is `dclaw-<agent-name>`, so
+# `dclaw-smoke-daemon`, `dclaw-smoke-dup`, etc. These prefixes guarantee we
+# never collide with (or wipe) a real user agent.
+SMOKE_AGENT_NAMES=(smoke-daemon smoke-dup smoke-chatbot smoke-chatbot13)
+
+wipe_smoke_containers() {
+  for name in "${SMOKE_AGENT_NAMES[@]}"; do
+    # Container name prefix is `dclaw-` (added by daemon's lifecycle layer).
+    docker rm -f "dclaw-${name}" >/dev/null 2>&1 || true
+  done
+}
+
 DCLAW_BIN="${DCLAW_BIN:-./bin/dclaw}"
 DCLAWD_BIN="${DCLAWD_BIN:-./bin/dclawd}"
 STATE_DIR="${STATE_DIR:-$(mktemp -d -t dclaw-smoke-XXXX)}"
@@ -14,9 +39,14 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 cleanup() {
   "$DCLAW_BIN" --daemon-socket "$SOCKET" daemon stop >/dev/null 2>&1 || true
+  wipe_smoke_containers
   rm -rf "$STATE_DIR" || true
+  rm -rf "$HOME" || true
 }
 trap cleanup EXIT
+
+# Pre-run cleanup: wipe any smoke containers left over from a crashed prior run.
+wipe_smoke_containers
 
 echo "--- Test 1: daemon start ---"
 "$DCLAW_BIN" --daemon-socket "$SOCKET" daemon start || fail "daemon start"
@@ -28,20 +58,20 @@ echo "--- Test 2: daemon status ---"
 pass "daemon status"
 
 echo "--- Test 3: agent create ---"
-"$DCLAW_BIN" --daemon-socket "$SOCKET" agent create smokey \
+"$DCLAW_BIN" --daemon-socket "$SOCKET" agent create smoke-daemon \
   --image=dclaw-agent:v0.1 --workspace="$STATE_DIR" || fail "create"
 pass "agent create"
 
-echo "--- Test 4: agent list shows smokey ---"
-"$DCLAW_BIN" --daemon-socket "$SOCKET" agent list | grep -q smokey || fail "list missing smokey"
+echo "--- Test 4: agent list shows smoke-daemon ---"
+"$DCLAW_BIN" --daemon-socket "$SOCKET" agent list | grep -q smoke-daemon || fail "list missing smoke-daemon"
 pass "agent list"
 
-echo "--- Test 5: agent get smokey ---"
-"$DCLAW_BIN" --daemon-socket "$SOCKET" agent get smokey -o json | grep -q '"name": *"smokey"' || fail "get json"
+echo "--- Test 5: agent get smoke-daemon ---"
+"$DCLAW_BIN" --daemon-socket "$SOCKET" agent get smoke-daemon -o json | grep -q '"name": *"smoke-daemon"' || fail "get json"
 pass "agent get"
 
 echo "--- Test 6: agent delete ---"
-"$DCLAW_BIN" --daemon-socket "$SOCKET" agent delete smokey || fail "delete"
+"$DCLAW_BIN" --daemon-socket "$SOCKET" agent delete smoke-daemon || fail "delete"
 pass "agent delete"
 
 echo "--- Test 7: daemon stop ---"
@@ -58,9 +88,9 @@ echo "--- Test 8: duplicate agent name is rejected ---"
 STATE_DIR_NEG=$(mktemp -d -t dclaw-smoke-neg-XXXX)
 SOCKET_NEG="$STATE_DIR_NEG/dclaw.sock"
 "$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" daemon start || fail "neg-start"
-"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" agent create dup \
+"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" agent create smoke-dup \
   --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_NEG" || fail "dup-create-1"
-if "$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" agent create dup \
+if "$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" agent create smoke-dup \
   --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_NEG" 2>/dev/null; then
   fail "duplicate agent name should have been rejected"
 fi
@@ -100,10 +130,10 @@ echo "--- Test 12: agent chat RPC smoke (exec proxy) ---"
 STATE_DIR_CHAT=$(mktemp -d -t dclaw-smoke-chat-XXXX)
 SOCKET_CHAT="$STATE_DIR_CHAT/dclaw.sock"
 "$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" daemon start || fail "chat-start"
-"$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" agent create chatbot \
+"$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" agent create smoke-chatbot \
   --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_CHAT" || fail "chat-create"
-"$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" agent start chatbot || fail "chat-agent-start"
-OUT=$("$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" agent exec chatbot -- echo "smoke-ok" 2>&1)
+"$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" agent start smoke-chatbot || fail "chat-agent-start"
+OUT=$("$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" agent exec smoke-chatbot -- echo "smoke-ok" 2>&1)
 echo "$OUT" | grep -q "smoke-ok" || fail "expected 'smoke-ok' in exec output, got: $OUT"
 "$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" daemon stop >/dev/null 2>&1 || true
 rm -rf "$STATE_DIR_CHAT"
@@ -117,10 +147,10 @@ else
   SOCKET_T13="$STATE_DIR_T13/dclaw.sock"
   "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" daemon start || fail "t13-start"
   # Create agent with the API key; --env inheritance handles the key if not set.
-  "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" agent create chatbot13 \
+  "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" agent create smoke-chatbot13 \
     --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T13" || fail "t13-create"
-  "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" agent start chatbot13 || fail "t13-agent-start"
-  OUT=$("$DCLAW_BIN" --daemon-socket "$SOCKET_T13" agent chat chatbot13 \
+  "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" agent start smoke-chatbot13 || fail "t13-agent-start"
+  OUT=$("$DCLAW_BIN" --daemon-socket "$SOCKET_T13" agent chat smoke-chatbot13 \
     --one-shot "reply with only the word: SMOKE_CONFIRMED" \
     --timeout 90s 2>&1) || fail "t13-chat-cmd failed (exit $?)"
   echo "$OUT" | grep -qi "SMOKE_CONFIRMED\|smoke_confirmed\|smoke confirmed" \
