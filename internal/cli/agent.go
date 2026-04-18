@@ -348,6 +348,7 @@ func init() {
 		agentLogsCmd,
 		agentExecCmd,
 		agentAttachCmd, // alpha.2
+		agentChatCmd,   // alpha.4 --one-shot
 	)
 }
 

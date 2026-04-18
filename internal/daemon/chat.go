@@ -22,11 +22,12 @@ import (
 type ChatHandler struct {
 	log    *slog.Logger
 	repo   *store.Repo
-	docker *sandbox.DockerClient
+	docker sandbox.DockerExecClient
 }
 
-// NewChatHandler returns a ChatHandler.
-func NewChatHandler(log *slog.Logger, repo *store.Repo, docker *sandbox.DockerClient) *ChatHandler {
+// NewChatHandler returns a ChatHandler. docker accepts any DockerExecClient;
+// pass a *sandbox.DockerClient in production, a mock in tests.
+func NewChatHandler(log *slog.Logger, repo *store.Repo, docker sandbox.DockerExecClient) *ChatHandler {
 	return &ChatHandler{log: log, repo: repo, docker: docker}
 }
 
@@ -79,6 +80,22 @@ func (h *ChatHandler) Handle(
 
 	// Readiness check: `docker exec` against a stopped container silently
 	// fails, so surface a clean chat error instead of a confusing empty chunk.
+	// NOTE: There is a TOCTOU window between this check and ContainerExecCreate.
+	// The container can die in the microsecond gap. This is documented and
+	// accepted for alpha.4; beta.1 adds retry logic.
+	if h.docker == nil {
+		// nil docker client — return a clear error rather than a nil dereference.
+		notReady := protocol.AgentChatChunkNotification{
+			Name:      req.Name,
+			Role:      "error",
+			Text:      "docker client not available",
+			Sequence:  0,
+			Final:     true,
+			MessageID: msgID,
+		}
+		return send(protocol.Notification("agent.chat.chunk", notReady))
+	}
+
 	status, statErr := h.docker.InspectStatus(ctx, rec.ContainerID)
 	if statErr != nil || status != "running" {
 		shown := status
@@ -98,7 +115,7 @@ func (h *ChatHandler) Handle(
 
 	h.log.Debug("chat exec start", "agent", req.Name, "msg_id", msgID)
 
-	// Alpha.3: synchronous exec — one final chunk.
+	// Alpha.3/alpha.4: synchronous exec — one final chunk.
 	// Beta.1: replace with ExecInStream (true line-by-line via docker attach).
 	argv := []string{"pi", "-p", "--no-session", req.Content}
 	stdout, stderr, exitCode, execErr := h.docker.ExecIn(ctx, rec.ContainerID, argv)

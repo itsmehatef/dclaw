@@ -26,6 +26,18 @@ type DockerClient struct {
 	cli *client.Client
 }
 
+// DockerExecClient is the subset of DockerClient methods needed by ChatHandler.
+// Declaring it in this package (next to the concrete type) keeps sandbox as the
+// single source of truth for Docker API shapes. ChatHandler accepts this
+// interface so tests can inject a mock without a live Docker daemon.
+type DockerExecClient interface {
+	InspectStatus(ctx context.Context, id string) (string, error)
+	ExecIn(ctx context.Context, id string, argv []string) (string, string, int, error)
+}
+
+// Verify DockerClient satisfies DockerExecClient at compile time.
+var _ DockerExecClient = (*DockerClient)(nil)
+
 // CreateSpec captures everything the daemon needs to create a new agent
 // container.
 type CreateSpec struct {

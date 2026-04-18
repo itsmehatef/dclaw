@@ -109,4 +109,25 @@ echo "$OUT" | grep -q "smoke-ok" || fail "expected 'smoke-ok' in exec output, go
 rm -rf "$STATE_DIR_CHAT"
 pass "agent chat RPC smoke"
 
+echo "--- Test 13: agent chat real round-trip (requires ANTHROPIC_API_KEY) ---"
+if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${ANTHROPIC_OAUTH_TOKEN:-}" ]; then
+  echo "SKIP: Test 13 requires ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN — skipping (set the var to enable)"
+else
+  STATE_DIR_T13=$(mktemp -d -t dclaw-smoke-t13-XXXX)
+  SOCKET_T13="$STATE_DIR_T13/dclaw.sock"
+  "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" daemon start || fail "t13-start"
+  # Create agent with the API key; --env inheritance handles the key if not set.
+  "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" agent create chatbot13 \
+    --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T13" || fail "t13-create"
+  "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" agent start chatbot13 || fail "t13-agent-start"
+  OUT=$("$DCLAW_BIN" --daemon-socket "$SOCKET_T13" agent chat chatbot13 \
+    --one-shot "reply with only the word: SMOKE_CONFIRMED" \
+    --timeout 90s 2>&1) || fail "t13-chat-cmd failed (exit $?)"
+  echo "$OUT" | grep -qi "SMOKE_CONFIRMED\|smoke_confirmed\|smoke confirmed" \
+    || fail "Test 13 expected SMOKE_CONFIRMED in chat output, got: $OUT"
+  "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" daemon stop >/dev/null 2>&1 || true
+  rm -rf "$STATE_DIR_T13"
+  pass "agent chat real round-trip"
+fi
+
 echo "All daemon smoke tests passed."
