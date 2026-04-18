@@ -11,6 +11,21 @@ import (
 	"github.com/itsmehatef/dclaw/internal/client"
 )
 
+// wellKnownEnvKeys is the allowlist of environment variable names that are
+// automatically inherited from the shell when the user does not pass them
+// explicitly via --env. This list is intentionally small and explicit —
+// we do NOT inherit arbitrary shell environment. To extend the list, add
+// entries here only for credentials that every dclaw user is expected to
+// supply to their agents.
+//
+// Behaviour: for each key in this list, if the key is NOT already present in
+// the --env slice AND os.Getenv(key) != "", the key=value pair is prepended
+// to the slice as a lowest-priority default. Explicit --env always wins.
+var wellKnownEnvKeys = []string{
+	"ANTHROPIC_API_KEY",
+	"ANTHROPIC_OAUTH_TOKEN",
+}
+
 var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Manage agents (create, list, start, stop, ...)",
@@ -40,7 +55,7 @@ var agentCreateCmd = &cobra.Command{
 				Image:     agentCreateImage,
 				Channel:   agentCreateChannel,
 				Workspace: agentCreateWorkspace,
-				Env:       kvSliceToMap(agentCreateEnv),
+				Env:       kvSliceToMap(mergeShellEnv(agentCreateEnv)),
 				Labels:    kvSliceToMap(agentCreateLabel),
 			}
 			if err := c.AgentCreate(ctx, a); err != nil {
@@ -153,7 +168,7 @@ var agentUpdateCmd = &cobra.Command{
 			a := client.Agent{
 				Name:   args[0],
 				Image:  agentUpdateImage,
-				Env:    kvSliceToMap(agentUpdateEnv),
+				Env:    kvSliceToMap(mergeShellEnv(agentUpdateEnv)),
 				Labels: kvSliceToMap(agentUpdateLabel),
 			}
 			if err := c.AgentUpdate(ctx, a); err != nil {
@@ -305,12 +320,16 @@ func init() {
 	agentCreateCmd.Flags().StringVar(&agentCreateImage, "image", "", "container image for the agent (required)")
 	agentCreateCmd.Flags().StringVar(&agentCreateChannel, "channel", "", "channel to bind to")
 	agentCreateCmd.Flags().StringVar(&agentCreateWorkspace, "workspace", "", "host path to bind as /workspace")
-	agentCreateCmd.Flags().StringArrayVar(&agentCreateEnv, "env", nil, "set env var KEY=VAL (repeatable)")
+	agentCreateCmd.Flags().StringArrayVar(&agentCreateEnv, "env", nil,
+		"set env var KEY=VAL (repeatable); ANTHROPIC_API_KEY and ANTHROPIC_OAUTH_TOKEN\n"+
+			"\t\t\tare inherited from the shell if not specified")
 	agentCreateCmd.Flags().StringArrayVar(&agentCreateLabel, "label", nil, "set label KEY=VAL (repeatable)")
 	_ = agentCreateCmd.MarkFlagRequired("image")
 
 	agentUpdateCmd.Flags().StringVar(&agentUpdateImage, "image", "", "new container image")
-	agentUpdateCmd.Flags().StringArrayVar(&agentUpdateEnv, "env", nil, "set env var KEY=VAL (repeatable)")
+	agentUpdateCmd.Flags().StringArrayVar(&agentUpdateEnv, "env", nil,
+		"set env var KEY=VAL (repeatable); ANTHROPIC_API_KEY and ANTHROPIC_OAUTH_TOKEN\n"+
+			"\t\t\tare inherited from the shell if not specified")
 	agentUpdateCmd.Flags().StringArrayVar(&agentUpdateLabel, "label", nil, "set label KEY=VAL (repeatable)")
 
 	agentLogsCmd.Flags().BoolVarP(&agentLogsFollow, "follow", "f", false, "stream new log output")
@@ -340,6 +359,44 @@ func kvSliceToMap(items []string) map[string]string {
 				out[kv[:i]] = kv[i+1:]
 				break
 			}
+		}
+	}
+	return out
+}
+
+// mergeShellEnv takes an --env slice and returns a new slice that includes
+// any well-known keys missing from the original. Keys already present in
+// explicit are left unchanged (explicit always wins). Keys present in
+// wellKnownEnvKeys but not in explicit are appended from os.Getenv if non-empty.
+//
+// The merge is done by name-presence check only (O(n*m), n=len(explicit),
+// m=len(wellKnownEnvKeys)). Both lists are tiny (≤10 items each), so this
+// is fine.
+func mergeShellEnv(explicit []string) []string {
+	// Build a set of key names already present in the explicit slice.
+	present := make(map[string]bool, len(explicit))
+	for _, kv := range explicit {
+		for i := 0; i < len(kv); i++ {
+			if kv[i] == '=' {
+				present[kv[:i]] = true
+				break
+			}
+		}
+		// If there's no '=', treat the whole thing as a key with empty value.
+		if !present[kv] {
+			present[kv] = true
+		}
+	}
+
+	out := make([]string, len(explicit))
+	copy(out, explicit)
+
+	for _, key := range wellKnownEnvKeys {
+		if present[key] {
+			continue // user-supplied value wins; do not override
+		}
+		if val := os.Getenv(key); val != "" {
+			out = append(out, key+"="+val)
 		}
 	}
 	return out
