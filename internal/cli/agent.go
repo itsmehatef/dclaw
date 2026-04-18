@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -39,6 +41,7 @@ var (
 	agentCreateChannel   string
 	agentCreateWorkspace string
 	agentCreateEnv       []string
+	agentCreateEnvFile   string
 	agentCreateLabel     []string
 )
 
@@ -49,13 +52,17 @@ var agentCreateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 		defer cancel()
+		env, err := composeEnv(agentCreateEnvFile, agentCreateEnv)
+		if err != nil {
+			return err
+		}
 		return withClient(ctx, func(c *client.RPCClient) error {
 			a := client.Agent{
 				Name:      args[0],
 				Image:     agentCreateImage,
 				Channel:   agentCreateChannel,
 				Workspace: agentCreateWorkspace,
-				Env:       kvSliceToMap(mergeShellEnv(agentCreateEnv)),
+				Env:       env,
 				Labels:    kvSliceToMap(agentCreateLabel),
 			}
 			if err := c.AgentCreate(ctx, a); err != nil {
@@ -149,9 +156,10 @@ var agentDescribeCmd = &cobra.Command{
 // ---------- update ----------
 
 var (
-	agentUpdateImage string
-	agentUpdateEnv   []string
-	agentUpdateLabel []string
+	agentUpdateImage   string
+	agentUpdateEnv     []string
+	agentUpdateEnvFile string
+	agentUpdateLabel   []string
 )
 
 var agentUpdateCmd = &cobra.Command{
@@ -159,16 +167,20 @@ var agentUpdateCmd = &cobra.Command{
 	Short: "Update an agent's image, env, or labels",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if agentUpdateImage == "" && len(agentUpdateEnv) == 0 && len(agentUpdateLabel) == 0 {
-			return fmt.Errorf("at least one of --image, --env, --label must be provided")
+		if agentUpdateImage == "" && len(agentUpdateEnv) == 0 && agentUpdateEnvFile == "" && len(agentUpdateLabel) == 0 {
+			return fmt.Errorf("at least one of --image, --env, --env-file, --label must be provided")
 		}
 		ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 		defer cancel()
+		env, err := composeEnv(agentUpdateEnvFile, agentUpdateEnv)
+		if err != nil {
+			return err
+		}
 		return withClient(ctx, func(c *client.RPCClient) error {
 			a := client.Agent{
 				Name:   args[0],
 				Image:  agentUpdateImage,
-				Env:    kvSliceToMap(mergeShellEnv(agentUpdateEnv)),
+				Env:    env,
 				Labels: kvSliceToMap(agentUpdateLabel),
 			}
 			if err := c.AgentUpdate(ctx, a); err != nil {
@@ -323,6 +335,9 @@ func init() {
 	agentCreateCmd.Flags().StringArrayVar(&agentCreateEnv, "env", nil,
 		"set env var KEY=VAL (repeatable); ANTHROPIC_API_KEY and ANTHROPIC_OAUTH_TOKEN\n"+
 			"\t\t\tare inherited from the shell if not specified")
+	agentCreateCmd.Flags().StringVar(&agentCreateEnvFile, "env-file", "",
+		"Path to dotenv-style file (KEY=VAL per line, # comments OK) to load env vars from. "+
+			"Values from --env take precedence.")
 	agentCreateCmd.Flags().StringArrayVar(&agentCreateLabel, "label", nil, "set label KEY=VAL (repeatable)")
 	_ = agentCreateCmd.MarkFlagRequired("image")
 
@@ -330,6 +345,9 @@ func init() {
 	agentUpdateCmd.Flags().StringArrayVar(&agentUpdateEnv, "env", nil,
 		"set env var KEY=VAL (repeatable); ANTHROPIC_API_KEY and ANTHROPIC_OAUTH_TOKEN\n"+
 			"\t\t\tare inherited from the shell if not specified")
+	agentUpdateCmd.Flags().StringVar(&agentUpdateEnvFile, "env-file", "",
+		"Path to dotenv-style file (KEY=VAL per line, # comments OK) to load env vars from. "+
+			"Values from --env take precedence.")
 	agentUpdateCmd.Flags().StringArrayVar(&agentUpdateLabel, "label", nil, "set label KEY=VAL (repeatable)")
 
 	agentLogsCmd.Flags().BoolVarP(&agentLogsFollow, "follow", "f", false, "stream new log output")
@@ -401,4 +419,74 @@ func mergeShellEnv(explicit []string) []string {
 		}
 	}
 	return out
+}
+
+// parseDotenv reads a dotenv-style file at path and returns a []string of
+// "KEY=VAL" pairs. Blank lines and lines starting with '#' are skipped.
+// Lines without '=' are rejected with an error. An empty path returns an
+// empty slice and nil error.
+//
+// Surrounding whitespace around keys and values is trimmed. Values are NOT
+// unquoted — if the file contains `KEY="val"`, the stored value is literally
+// `"val"`. This mirrors the simplest dotenv semantics and avoids surprise.
+func parseDotenv(path string) ([]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read --env-file %q: %w", path, err)
+	}
+	defer f.Close()
+
+	var out []string
+	scan := bufio.NewScanner(f)
+	lineNo := 0
+	for scan.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scan.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq < 0 {
+			return nil, fmt.Errorf("--env-file %q: line %d: missing '=' (expected KEY=VAL)", path, lineNo)
+		}
+		key := strings.TrimSpace(line[:eq])
+		if key == "" {
+			return nil, fmt.Errorf("--env-file %q: line %d: empty key", path, lineNo)
+		}
+		val := line[eq+1:]
+		out = append(out, key+"="+val)
+	}
+	if err := scan.Err(); err != nil {
+		return nil, fmt.Errorf("read --env-file %q: %w", path, err)
+	}
+	return out, nil
+}
+
+// composeEnv builds the final env map for an agent.create / agent.update
+// request honoring the precedence order (lowest → highest; later overrides
+// earlier):
+//
+//  1. Shell inheritance (wellKnownEnvKeys allowlist via mergeShellEnv)
+//  2. --env-file values
+//  3. --env explicit flags
+//
+// Implementation: concatenate [envFile, explicit] then hand to mergeShellEnv
+// (which only fills keys NOT already present). kvSliceToMap walks the slice
+// in order and later writes overwrite earlier ones — so explicit values
+// naturally win over file values.
+func composeEnv(envFilePath string, explicitEnv []string) (map[string]string, error) {
+	fileEnv, err := parseDotenv(envFilePath)
+	if err != nil {
+		return nil, err
+	}
+	// Append in precedence order: file first (lowest), explicit second (wins).
+	// mergeShellEnv then prepends any missing well-known shell keys as the
+	// lowest-priority defaults.
+	combined := make([]string, 0, len(fileEnv)+len(explicitEnv))
+	combined = append(combined, fileEnv...)
+	combined = append(combined, explicitEnv...)
+	return kvSliceToMap(mergeShellEnv(combined)), nil
 }
