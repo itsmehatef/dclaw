@@ -84,9 +84,7 @@ func main() {
 	}
 	defer docker.Close()
 
-	// Wire and run the server.
-	srv := daemon.NewServer(cfg, logger, repo, docker)
-
+	// Build context that cancels on SIGTERM/SIGINT.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -96,6 +94,18 @@ func main() {
 		os.Exit(1)
 	}
 	defer cfg.RemovePIDFile()
+
+	// Start background status reconciler.
+	// Run initial sync immediately (before the first 2s tick) so the DB is
+	// accurate as soon as the daemon starts — e.g. after a daemon restart where
+	// containers may have exited while dclawd was down. ReconcileOnce logs
+	// warnings on individual failures but does not abort daemon startup.
+	reconciler := daemon.NewStatusReconciler(logger, repo, docker)
+	reconciler.ReconcileOnce(ctx) // synchronous initial pass
+	go reconciler.Run(ctx)
+
+	// Wire and run the server.
+	srv := daemon.NewServer(cfg, logger, repo, docker)
 
 	if _ = foreground; true {
 		if err := srv.Run(ctx); err != nil {
