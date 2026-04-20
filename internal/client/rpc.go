@@ -11,15 +11,13 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 
-	"github.com/itsmehatef/dclaw/internal/daemon"
+	"github.com/itsmehatef/dclaw/internal/config"
 	"github.com/itsmehatef/dclaw/internal/protocol"
 	"github.com/itsmehatef/dclaw/internal/version"
 )
@@ -318,13 +316,16 @@ var (
 	ExecStderrWriter io.Writer
 )
 
-// DefaultSocketPath returns the resolved socket path for this host.
+// DefaultSocketPath returns the resolved socket path for this host. It
+// delegates to internal/config so every entrypoint (CLI, TUI, daemon) shares
+// one resolution ladder. Falls back to /tmp/dclaw.sock when even the home
+// directory cannot be determined — matches the legacy behavior callers relied on.
 func DefaultSocketPath() string {
-	home, err := os.UserHomeDir()
+	paths, err := config.Resolve("", "")
 	if err != nil {
 		return "/tmp/dclaw.sock"
 	}
-	return daemon.DefaultSocketPath(filepath.Join(home, ".dclaw"))
+	return config.DefaultSocketPath(paths.StateDir)
 }
 
 func (c *RPCClient) agentLogsFollowPoll(ctx context.Context, name string, tail int) (<-chan string, error) {

@@ -4,14 +4,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
+
+	"github.com/itsmehatef/dclaw/internal/config"
 )
 
 // Config holds the daemon's resolved paths and settings. Constructed once at
 // startup via LoadConfig; immutable thereafter.
 type Config struct {
-	SocketPath string // $XDG_RUNTIME_DIR/dclaw.sock or ~/.dclaw/dclaw.sock
+	SocketPath string // resolved via config.DefaultSocketPath
 	StateDir   string // ~/.dclaw (created with mode 0700)
 	DBPath     string // <StateDir>/state.db
 	LogDir     string // <StateDir>/logs
@@ -20,30 +21,22 @@ type Config struct {
 	LogLevel   string // debug|info|warn|error
 }
 
-// LoadConfig resolves default paths and validates the runtime environment.
+// LoadConfig resolves default paths via internal/config.Resolve, ensures the
+// state and log directories exist, and returns the populated Config.
 // socketOverride / stateDirOverride / logLevel may be empty.
 func LoadConfig(socketOverride, stateDirOverride, logLevel string) (*Config, error) {
-	home, err := os.UserHomeDir()
+	paths, err := config.Resolve(stateDirOverride, socketOverride)
 	if err != nil {
-		return nil, fmt.Errorf("resolve home dir: %w", err)
+		return nil, err
 	}
 
-	stateDir := stateDirOverride
-	if stateDir == "" {
-		stateDir = filepath.Join(home, ".dclaw")
-	}
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("mkdir state dir %q: %w", stateDir, err)
+	if err := os.MkdirAll(paths.StateDir, 0o700); err != nil {
+		return nil, fmt.Errorf("mkdir state dir %q: %w", paths.StateDir, err)
 	}
 
-	logDir := filepath.Join(stateDir, "logs")
+	logDir := filepath.Join(paths.StateDir, "logs")
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir log dir %q: %w", logDir, err)
-	}
-
-	socketPath := socketOverride
-	if socketPath == "" {
-		socketPath = DefaultSocketPath(stateDir)
 	}
 
 	if logLevel == "" {
@@ -51,31 +44,20 @@ func LoadConfig(socketOverride, stateDirOverride, logLevel string) (*Config, err
 	}
 
 	return &Config{
-		SocketPath: socketPath,
-		StateDir:   stateDir,
-		DBPath:     filepath.Join(stateDir, "state.db"),
+		SocketPath: paths.SocketPath,
+		StateDir:   paths.StateDir,
+		DBPath:     filepath.Join(paths.StateDir, "state.db"),
 		LogDir:     logDir,
 		LogPath:    filepath.Join(logDir, "daemon.log"),
-		PIDPath:    filepath.Join(stateDir, "dclawd.pid"),
+		PIDPath:    filepath.Join(paths.StateDir, "dclawd.pid"),
 		LogLevel:   logLevel,
 	}, nil
 }
 
-// DefaultSocketPath returns the resolved socket path for this host.
-//
-// On Linux, prefer $XDG_RUNTIME_DIR/dclaw.sock (typically /run/user/<uid>).
-// If XDG_RUNTIME_DIR is unset or not writable, fall back to <stateDir>/dclaw.sock.
-// On macOS, XDG_RUNTIME_DIR is rarely set; always use <stateDir>/dclaw.sock.
-func DefaultSocketPath(stateDir string) string {
-	if runtime.GOOS == "linux" {
-		if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
-			if fi, err := os.Stat(xdg); err == nil && fi.IsDir() {
-				return filepath.Join(xdg, "dclaw.sock")
-			}
-		}
-	}
-	return filepath.Join(stateDir, "dclaw.sock")
-}
+// DefaultSocketPath is a compatibility alias kept so any caller not in the
+// five call sites tracked by PR-A transparently redirects to the canonical
+// implementation in internal/config. Prefer config.DefaultSocketPath in new code.
+var DefaultSocketPath = config.DefaultSocketPath
 
 // WritePIDFile atomically writes pid to PIDPath with mode 0600.
 func (c *Config) WritePIDFile(pid int) error {

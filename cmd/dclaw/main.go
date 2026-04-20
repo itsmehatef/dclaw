@@ -7,6 +7,7 @@ import (
 	"github.com/mattn/go-isatty"
 
 	"github.com/itsmehatef/dclaw/internal/cli"
+	"github.com/itsmehatef/dclaw/internal/config"
 	"github.com/itsmehatef/dclaw/internal/tui"
 )
 
@@ -29,10 +30,11 @@ func main() {
 				tui.NoMouse = true
 			}
 		}
-		// Resolve the daemon socket path from the env/default (same logic as
-		// internal/client.DefaultSocketPath, duplicated to avoid a circular
-		// import between cmd/dclaw and internal/tui).
-		socket := resolveSocket()
+		// Resolve the daemon socket via config.MustResolveSocket so the bare
+		// TUI launch uses the same resolution ladder (flag > env > runtime-dir
+		// > state-dir) as every other entrypoint. Pre-PR-A this site hard-coded
+		// home + "/.dclaw/dclaw.sock", diverging from the rest of the codebase.
+		socket := config.MustResolveSocket()
 		if err := tui.Run(socket); err != nil {
 			fmt.Fprintf(os.Stderr, "dclaw tui: %v\n", err)
 			os.Exit(1)
@@ -56,15 +58,4 @@ func shouldLaunchTUI(argv []string) bool {
 		return false
 	}
 	return true
-}
-
-// resolveSocket mirrors daemon.DefaultSocketPath without importing internal/daemon,
-// which would create an oversized dependency in main. The canonical copy lives in
-// internal/client.DefaultSocketPath(); keep both in sync.
-func resolveSocket() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "/tmp/dclaw.sock"
-	}
-	return home + "/.dclaw/dclaw.sock"
 }
