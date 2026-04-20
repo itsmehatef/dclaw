@@ -14,6 +14,7 @@ import (
 var (
 	outputFormat string
 	daemonSocket string
+	stateDirFlag string
 	verbose      bool
 	noMouse      bool
 )
@@ -34,16 +35,15 @@ dashboard.`,
 		if noMouse {
 			tui.NoMouse = true
 		}
-		// Resolve daemonSocket if the user did not supply --daemon-socket.
-		// Goes through config.Resolve so env overrides and platform defaults
-		// are honored exactly once, in one place.
-		if daemonSocket == "" {
-			paths, err := config.Resolve("", "")
-			if err != nil {
-				return err
-			}
-			daemonSocket = paths.SocketPath
+		// Route both --state-dir and --daemon-socket through config.Resolve so
+		// the flag > env (DCLAW_STATE_DIR) > default precedence is honored
+		// exactly once, in one place. An explicit --daemon-socket always wins;
+		// otherwise the resolver derives the socket from the resolved state-dir.
+		paths, err := config.Resolve(stateDirFlag, daemonSocket)
+		if err != nil {
+			return err
 		}
+		daemonSocket = paths.SocketPath
 		return nil
 	},
 }
@@ -61,6 +61,10 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(
 		&daemonSocket, "daemon-socket", "",
 		"path to the dclaw daemon Unix socket (default: resolved via config.Resolve)",
+	)
+	rootCmd.PersistentFlags().StringVar(
+		&stateDirFlag, "state-dir", "",
+		"override state directory (default: $DCLAW_STATE_DIR or ~/.dclaw)",
 	)
 	rootCmd.PersistentFlags().BoolVarP(
 		&verbose, "verbose", "v", false,

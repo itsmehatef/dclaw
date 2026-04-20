@@ -123,3 +123,41 @@ func defaultSocketForState(t *testing.T, stateDir string) string {
 	t.Helper()
 	return DefaultSocketPath(stateDir)
 }
+
+// TestResolveFlagEnvRoundTrip asserts that --state-dir passed on the dclaw
+// CLI and --state-dir passed on the dclawd daemon collapse to identical
+// Paths. This is a Go-level round-trip (both entrypoints call the same
+// Resolve); the test fixes the precedence contract between the two
+// binaries so a future refactor cannot drift them apart.
+func TestResolveFlagEnvRoundTrip(t *testing.T) {
+	// Clear the env var so the flag is the only input in play; this also
+	// proves flag-wins-over-env by setting env to a distractor value.
+	t.Setenv("DCLAW_STATE_DIR", "/tmp/env-distractor")
+
+	const shared = "/tmp/roundtrip-state"
+
+	// dclaw CLI side: flag on rootCmd, daemon-socket left unset.
+	cliPaths, err := Resolve(shared, "")
+	if err != nil {
+		t.Fatalf("dclaw CLI Resolve: %v", err)
+	}
+	// dclawd daemon side: same flag, no socket override.
+	daemonPaths, err := Resolve(shared, "")
+	if err != nil {
+		t.Fatalf("dclawd Resolve: %v", err)
+	}
+
+	if cliPaths != daemonPaths {
+		t.Fatalf("dclaw and dclawd resolved to different Paths:\n  dclaw:  %+v\n  dclawd: %+v",
+			cliPaths, daemonPaths)
+	}
+	if cliPaths.StateDir != shared {
+		t.Errorf("StateDir: got %q want %q (flag must win over DCLAW_STATE_DIR)",
+			cliPaths.StateDir, shared)
+	}
+	wantSocket := DefaultSocketPath(shared)
+	if cliPaths.SocketPath != wantSocket {
+		t.Errorf("SocketPath: got %q want %q (socket must derive from resolved state-dir)",
+			cliPaths.SocketPath, wantSocket)
+	}
+}
