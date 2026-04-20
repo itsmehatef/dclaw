@@ -3,13 +3,11 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/itsmehatef/dclaw/internal/client"
-	"github.com/itsmehatef/dclaw/internal/daemon"
+	"github.com/itsmehatef/dclaw/internal/config"
 	"github.com/itsmehatef/dclaw/internal/tui"
 )
 
@@ -36,6 +34,16 @@ dashboard.`,
 		if noMouse {
 			tui.NoMouse = true
 		}
+		// Resolve daemonSocket if the user did not supply --daemon-socket.
+		// Goes through config.Resolve so env overrides and platform defaults
+		// are honored exactly once, in one place.
+		if daemonSocket == "" {
+			paths, err := config.Resolve("", "")
+			if err != nil {
+				return err
+			}
+			daemonSocket = paths.SocketPath
+		}
 		return nil
 	},
 }
@@ -51,8 +59,8 @@ func init() {
 		"output format for list/get/status commands: table, json, yaml",
 	)
 	rootCmd.PersistentFlags().StringVar(
-		&daemonSocket, "daemon-socket", defaultSocketPath(),
-		"path to the dclaw daemon Unix socket",
+		&daemonSocket, "daemon-socket", "",
+		"path to the dclaw daemon Unix socket (default: resolved via config.Resolve)",
 	)
 	rootCmd.PersistentFlags().BoolVarP(
 		&verbose, "verbose", "v", false,
@@ -77,14 +85,6 @@ func validateOutputFormat() error {
 	default:
 		return fmt.Errorf("invalid --output %q: must be one of table, json, yaml", outputFormat)
 	}
-}
-
-func defaultSocketPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "/tmp/dclaw.sock"
-	}
-	return daemon.DefaultSocketPath(filepath.Join(home, ".dclaw"))
 }
 
 func newClient(ctx context.Context) (*client.RPCClient, error) {

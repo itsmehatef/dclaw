@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/itsmehatef/dclaw/internal/client"
+	"github.com/itsmehatef/dclaw/internal/config"
 	"github.com/itsmehatef/dclaw/internal/daemon"
 )
 
@@ -27,11 +28,11 @@ var daemonStartCmd = &cobra.Command{
 	Short: "Start the dclaw daemon",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		home, err := os.UserHomeDir()
+		paths, err := config.Resolve("", daemonSocket)
 		if err != nil {
 			return err
 		}
-		cfg, err := daemon.LoadConfig(daemonSocket, filepath.Join(home, ".dclaw"), "info")
+		cfg, err := daemon.LoadConfig(paths.SocketPath, paths.StateDir, "info")
 		if err != nil {
 			return err
 		}
@@ -88,8 +89,11 @@ var daemonStopCmd = &cobra.Command{
 	Short: "Stop the dclaw daemon",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		home, _ := os.UserHomeDir()
-		cfg, err := daemon.LoadConfig(daemonSocket, filepath.Join(home, ".dclaw"), "info")
+		paths, err := config.Resolve("", daemonSocket)
+		if err != nil {
+			return err
+		}
+		cfg, err := daemon.LoadConfig(paths.SocketPath, paths.StateDir, "info")
 		if err != nil {
 			return err
 		}
