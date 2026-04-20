@@ -28,7 +28,7 @@ var daemonStartCmd = &cobra.Command{
 	Short: "Start the dclaw daemon",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		paths, err := config.Resolve("", daemonSocket)
+		paths, err := config.Resolve(stateDirFlag, daemonSocket)
 		if err != nil {
 			return err
 		}
@@ -89,7 +89,7 @@ var daemonStopCmd = &cobra.Command{
 	Short: "Stop the dclaw daemon",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		paths, err := config.Resolve("", daemonSocket)
+		paths, err := config.Resolve(stateDirFlag, daemonSocket)
 		if err != nil {
 			return err
 		}

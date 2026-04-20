@@ -17,6 +17,12 @@ import (
 	"runtime"
 )
 
+// EnvWorkspaceRoot names the environment variable that selects the workspace
+// root used for agent workspace policy validation. It is consumed by PR-C's
+// config reader (internal/config file reader + internal/paths.Policy); PR-B
+// only pre-declares the constant so the name has exactly one source of truth.
+const EnvWorkspaceRoot = "DCLAW_WORKSPACE_ROOT"
+
 // Paths is the resolved on-disk surface used by the daemon and all clients.
 // Callers treat Paths as immutable after Resolve returns.
 type Paths struct {
