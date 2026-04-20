@@ -154,12 +154,13 @@ func (c *RPCClient) DaemonVersion(ctx context.Context) (string, error) {
 
 func (c *RPCClient) AgentCreate(ctx context.Context, a Agent) error {
 	return c.call(ctx, "agent.create", protocol.AgentCreateParams{
-		Name:      a.Name,
-		Image:     a.Image,
-		Workspace: a.Workspace,
-		Env:       mapToKVList(a.Env),
-		Labels:    mapToKVList(a.Labels),
-		Channel:   a.Channel,
+		Name:                 a.Name,
+		Image:                a.Image,
+		Workspace:            a.Workspace,
+		WorkspaceTrustReason: a.WorkspaceTrustReason,
+		Env:                  mapToKVList(a.Env),
+		Labels:               mapToKVList(a.Labels),
+		Channel:              a.Channel,
 	}, nil)
 }
 
@@ -376,13 +377,14 @@ func mapToKVList(m map[string]string) []string {
 
 func wireToAgent(a protocol.Agent) Agent {
 	return Agent{
-		Name:      a.Name,
-		Image:     a.Image,
-		Channel:   "",
-		Workspace: a.Workspace,
-		Env:       a.Env,
-		Labels:    a.Labels,
-		Status:    a.Status,
+		Name:                 a.Name,
+		Image:                a.Image,
+		Channel:              "",
+		Workspace:            a.Workspace,
+		WorkspaceTrustReason: a.WorkspaceTrustReason,
+		Env:                  a.Env,
+		Labels:               a.Labels,
+		Status:               a.Status,
 	}
 }
 

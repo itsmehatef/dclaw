@@ -37,12 +37,13 @@ var agentCmd = &cobra.Command{
 // ---------- create ----------
 
 var (
-	agentCreateImage     string
-	agentCreateChannel   string
-	agentCreateWorkspace string
-	agentCreateEnv       []string
-	agentCreateEnvFile   string
-	agentCreateLabel     []string
+	agentCreateImage          string
+	agentCreateChannel        string
+	agentCreateWorkspace      string
+	agentCreateWorkspaceTrust string
+	agentCreateEnv            []string
+	agentCreateEnvFile        string
+	agentCreateLabel          []string
 )
 
 var agentCreateCmd = &cobra.Command{
@@ -50,6 +51,16 @@ var agentCreateCmd = &cobra.Command{
 	Short: "Create an agent",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// --workspace-trust requires a non-empty reason string. Per §4.3 of
+		// the plan, if the flag was provided (even as empty-value via
+		// --workspace-trust=""), we reject at the CLI layer before any
+		// network round-trip. cobra.Command.Flags().Changed distinguishes
+		// "flag was set" from "default".
+		if cmd.Flags().Changed("workspace-trust") {
+			if strings.TrimSpace(agentCreateWorkspaceTrust) == "" {
+				return fmt.Errorf("--workspace-trust requires a non-empty reason string")
+			}
+		}
 		ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 		defer cancel()
 		env, err := composeEnv(agentCreateEnvFile, agentCreateEnv)
@@ -58,12 +69,13 @@ var agentCreateCmd = &cobra.Command{
 		}
 		return withClient(ctx, func(c *client.RPCClient) error {
 			a := client.Agent{
-				Name:      args[0],
-				Image:     agentCreateImage,
-				Channel:   agentCreateChannel,
-				Workspace: agentCreateWorkspace,
-				Env:       env,
-				Labels:    kvSliceToMap(agentCreateLabel),
+				Name:                 args[0],
+				Image:                agentCreateImage,
+				Channel:              agentCreateChannel,
+				Workspace:            agentCreateWorkspace,
+				WorkspaceTrustReason: agentCreateWorkspaceTrust,
+				Env:                  env,
+				Labels:               kvSliceToMap(agentCreateLabel),
 			}
 			if err := c.AgentCreate(ctx, a); err != nil {
 				return HandleRPCError(cmd, err)
@@ -136,6 +148,9 @@ var agentDescribeCmd = &cobra.Command{
 			fmt.Fprintf(cmd.OutOrStdout(), "Image:     %s\n", a.Image)
 			fmt.Fprintf(cmd.OutOrStdout(), "Status:    %s\n", a.Status)
 			fmt.Fprintf(cmd.OutOrStdout(), "Workspace: %s\n", a.Workspace)
+			if a.WorkspaceTrustReason != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Workspace Trust: %s\n", a.WorkspaceTrustReason)
+			}
 			if len(a.Env) > 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "Env:")
 				for k, v := range a.Env {
@@ -332,6 +347,8 @@ func init() {
 	agentCreateCmd.Flags().StringVar(&agentCreateImage, "image", "", "container image for the agent (required)")
 	agentCreateCmd.Flags().StringVar(&agentCreateChannel, "channel", "", "channel to bind to")
 	agentCreateCmd.Flags().StringVar(&agentCreateWorkspace, "workspace", "", "host path to bind as /workspace")
+	agentCreateCmd.Flags().StringVar(&agentCreateWorkspaceTrust, "workspace-trust", "",
+		"explicit operator trust for a workspace path outside the allow-root; requires a non-empty reason string shown in 'agent describe' and the audit log")
 	agentCreateCmd.Flags().StringArrayVar(&agentCreateEnv, "env", nil,
 		"set env var KEY=VAL (repeatable); ANTHROPIC_API_KEY and ANTHROPIC_OAUTH_TOKEN\n"+
 			"\t\t\tare inherited from the shell if not specified")

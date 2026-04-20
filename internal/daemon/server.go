@@ -11,6 +11,8 @@ import (
 	"os"
 	"sync"
 
+	"github.com/itsmehatef/dclaw/internal/audit"
+	"github.com/itsmehatef/dclaw/internal/paths"
 	"github.com/itsmehatef/dclaw/internal/protocol"
 	"github.com/itsmehatef/dclaw/internal/sandbox"
 	"github.com/itsmehatef/dclaw/internal/store"
@@ -34,9 +36,15 @@ type Server struct {
 }
 
 // NewServer wires up a Server. Call Run to start it.
-func NewServer(cfg *Config, log *slog.Logger, repo *store.Repo, docker *sandbox.DockerClient) *Server {
+//
+// beta.1-paths-hardening: policy and auditLog are plumbed through to the
+// router (which forwards them to the lifecycle). Both are required for
+// AgentCreate to run the workspace validator and write audit entries;
+// passing a zero-value policy or nil auditLog is supported but disables
+// those checks.
+func NewServer(cfg *Config, log *slog.Logger, repo *store.Repo, docker *sandbox.DockerClient, policy paths.Policy, auditLog *audit.Logger) *Server {
 	s := &Server{cfg: cfg, log: log, repo: repo, docker: docker}
-	s.router = NewRouter(log, repo, docker)
+	s.router = NewRouter(log, repo, docker, policy, auditLog)
 	return s
 }
 

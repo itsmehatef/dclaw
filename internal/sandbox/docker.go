@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,6 +21,11 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 )
+
+// ErrDockerFailure is the sentinel for any error arising from a Docker
+// API call. Wrapped with fmt.Errorf("%w: %v", ErrDockerFailure, err) so
+// callers can dispatch via errors.Is without string matching.
+var ErrDockerFailure = errors.New("docker operation failed")
 
 // DockerClient is a thin wrapper around the docker SDK's client.Client.
 type DockerClient struct {
@@ -74,6 +80,13 @@ func (d *DockerClient) Close() error {
 
 // CreateAgent creates (but does not start) a container for the given spec.
 // Returns the docker container ID.
+//
+// Belt-and-suspenders: before building the bind-mount we assert the
+// workspace path is already absolute and Clean — policy lives upstream
+// in internal/paths, and a sandbox-layer failure here would be a dclaw
+// bug (the validator gave us a relative path, or "." / ".." crept in).
+// We deliberately do NOT wrap with paths.ErrWorkspaceForbidden because
+// this is not a policy rejection; it is an internal invariant violation.
 func (d *DockerClient) CreateAgent(ctx context.Context, spec CreateSpec) (string, error) {
 	env := make([]string, 0, len(spec.Env))
 	for k, v := range spec.Env {
@@ -88,6 +101,15 @@ func (d *DockerClient) CreateAgent(ctx context.Context, spec CreateSpec) (string
 
 	var mounts []mount.Mount
 	if spec.Workspace != "" {
+		if !filepath.IsAbs(spec.Workspace) {
+			return "", fmt.Errorf("sandbox: workspace must be absolute, got %q", spec.Workspace)
+		}
+		if filepath.Clean(spec.Workspace) != spec.Workspace {
+			return "", fmt.Errorf("sandbox: workspace must be clean, got %q", spec.Workspace)
+		}
+		if strings.Contains(spec.Workspace, "..") {
+			return "", fmt.Errorf("sandbox: workspace contains '..': %q", spec.Workspace)
+		}
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeBind,
 			Source: spec.Workspace,
@@ -108,14 +130,17 @@ func (d *DockerClient) CreateAgent(ctx context.Context, spec CreateSpec) (string
 
 	resp, err := d.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, spec.Name)
 	if err != nil {
-		return "", fmt.Errorf("ContainerCreate: %w", err)
+		return "", fmt.Errorf("%w: ContainerCreate: %v", ErrDockerFailure, err)
 	}
 	return resp.ID, nil
 }
 
 // StartAgent starts a created container.
 func (d *DockerClient) StartAgent(ctx context.Context, id string) error {
-	return d.cli.ContainerStart(ctx, id, container.StartOptions{})
+	if err := d.cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+		return fmt.Errorf("%w: ContainerStart: %v", ErrDockerFailure, err)
+	}
+	return nil
 }
 
 // StopAgent stops the container with a graceful SIGTERM grace period.

@@ -12,19 +12,28 @@ import (
 	"github.com/itsmehatef/dclaw/internal/protocol"
 )
 
+// ErrNotFound is the sentinel returned by Get/Update/Delete operations when
+// no row matches. Callers use errors.Is(err, ErrNotFound) instead of string
+// matching.
+var ErrNotFound = errors.New("not found")
+
+// ErrNameTaken is the sentinel returned by Insert when UNIQUE(name) fails.
+var ErrNameTaken = errors.New("name already taken")
+
 // AgentRecord is the on-disk shape of an agent row. Env and Labels are raw
 // JSON text; the Lifecycle layer marshals/unmarshals.
 type AgentRecord struct {
-	ID           string
-	Name         string
-	Image        string
-	Status       string
-	ContainerID  string
-	Workspace    string
-	Labels       string
-	Env          string
-	CreatedAt    int64
-	UpdatedAt    int64
+	ID                   string
+	Name                 string
+	Image                string
+	Status               string
+	ContainerID          string
+	Workspace            string
+	WorkspaceTrustReason string
+	Labels               string
+	Env                  string
+	CreatedAt            int64
+	UpdatedAt            int64
 }
 
 // ChannelRecord is the on-disk shape of a channel row.
@@ -46,24 +55,29 @@ type EventRecord struct {
 	Timestamp int64
 }
 
-// InsertAgent inserts a new row. Returns an error if the name is not unique.
+// InsertAgent inserts a new row. Returns an error wrapping ErrNameTaken if
+// the name already exists.
 func (r *Repo) InsertAgent(ctx context.Context, rec AgentRecord) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO agents (id, name, image, status, container_id, workspace_path, labels, env, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, rec.ID, rec.Name, rec.Image, rec.Status, rec.ContainerID, rec.Workspace, rec.Labels, rec.Env, rec.CreatedAt, rec.UpdatedAt)
+		INSERT INTO agents (id, name, image, status, container_id, workspace_path, workspace_trust_reason, labels, env, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, rec.ID, rec.Name, rec.Image, rec.Status, rec.ContainerID, rec.Workspace, rec.WorkspaceTrustReason, rec.Labels, rec.Env, rec.CreatedAt, rec.UpdatedAt)
+	if err != nil && isUniqueConstraintErr(err) {
+		return fmt.Errorf("agent %q: %w", rec.Name, ErrNameTaken)
+	}
 	return err
 }
 
-// GetAgent returns the agent with the given name, or an error if none exists.
+// GetAgent returns the agent with the given name, or an error wrapping
+// ErrNotFound if none exists.
 func (r *Repo) GetAgent(ctx context.Context, name string) (AgentRecord, error) {
 	var rec AgentRecord
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, name, image, status, COALESCE(container_id, ''), COALESCE(workspace_path, ''), labels, env, created_at, updated_at
+		SELECT id, name, image, status, COALESCE(container_id, ''), COALESCE(workspace_path, ''), COALESCE(workspace_trust_reason, ''), labels, env, created_at, updated_at
 		FROM agents WHERE name = ?
-	`, name).Scan(&rec.ID, &rec.Name, &rec.Image, &rec.Status, &rec.ContainerID, &rec.Workspace, &rec.Labels, &rec.Env, &rec.CreatedAt, &rec.UpdatedAt)
+	`, name).Scan(&rec.ID, &rec.Name, &rec.Image, &rec.Status, &rec.ContainerID, &rec.Workspace, &rec.WorkspaceTrustReason, &rec.Labels, &rec.Env, &rec.CreatedAt, &rec.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return AgentRecord{}, fmt.Errorf("agent %q not found", name)
+		return AgentRecord{}, fmt.Errorf("agent %q: %w", name, ErrNotFound)
 	}
 	return rec, err
 }
@@ -71,7 +85,7 @@ func (r *Repo) GetAgent(ctx context.Context, name string) (AgentRecord, error) {
 // ListAgents returns all agents ordered by created_at desc.
 func (r *Repo) ListAgents(ctx context.Context) ([]AgentRecord, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, name, image, status, COALESCE(container_id, ''), COALESCE(workspace_path, ''), labels, env, created_at, updated_at
+		SELECT id, name, image, status, COALESCE(container_id, ''), COALESCE(workspace_path, ''), COALESCE(workspace_trust_reason, ''), labels, env, created_at, updated_at
 		FROM agents ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -81,7 +95,7 @@ func (r *Repo) ListAgents(ctx context.Context) ([]AgentRecord, error) {
 	var out []AgentRecord
 	for rows.Next() {
 		var rec AgentRecord
-		if err := rows.Scan(&rec.ID, &rec.Name, &rec.Image, &rec.Status, &rec.ContainerID, &rec.Workspace, &rec.Labels, &rec.Env, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.Name, &rec.Image, &rec.Status, &rec.ContainerID, &rec.Workspace, &rec.WorkspaceTrustReason, &rec.Labels, &rec.Env, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, rec)
@@ -89,19 +103,19 @@ func (r *Repo) ListAgents(ctx context.Context) ([]AgentRecord, error) {
 	return out, rows.Err()
 }
 
-// UpdateAgent replaces an existing row by name. Returns an error if no row
-// was matched.
+// UpdateAgent replaces an existing row by name. Returns an error wrapping
+// ErrNotFound if no row was matched.
 func (r *Repo) UpdateAgent(ctx context.Context, rec AgentRecord) error {
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE agents SET image=?, status=?, container_id=?, workspace_path=?, labels=?, env=?, updated_at=?
+		UPDATE agents SET image=?, status=?, container_id=?, workspace_path=?, workspace_trust_reason=?, labels=?, env=?, updated_at=?
 		WHERE name = ?
-	`, rec.Image, rec.Status, rec.ContainerID, rec.Workspace, rec.Labels, rec.Env, rec.UpdatedAt, rec.Name)
+	`, rec.Image, rec.Status, rec.ContainerID, rec.Workspace, rec.WorkspaceTrustReason, rec.Labels, rec.Env, rec.UpdatedAt, rec.Name)
 	if err != nil {
 		return err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("agent %q not found", rec.Name)
+		return fmt.Errorf("agent %q: %w", rec.Name, ErrNotFound)
 	}
 	return nil
 }
@@ -114,9 +128,49 @@ func (r *Repo) DeleteAgent(ctx context.Context, name string) error {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("agent %q not found", name)
+		return fmt.Errorf("agent %q: %w", name, ErrNotFound)
 	}
 	return nil
+}
+
+// isUniqueConstraintErr returns true if err indicates a SQLite UNIQUE
+// constraint violation. modernc.org/sqlite surfaces this as a plain error
+// whose string contains "UNIQUE constraint failed". We keep the string
+// peek local to this file so repo.go is the only place that knows about
+// SQLite's error shapes.
+func isUniqueConstraintErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return containsFold(err.Error(), "UNIQUE constraint failed")
+}
+
+func containsFold(s, sub string) bool {
+	return len(s) >= len(sub) && indexFold(s, sub) >= 0
+}
+
+func indexFold(s, sub string) int {
+	n := len(sub)
+	for i := 0; i+n <= len(s); i++ {
+		match := true
+		for j := 0; j < n; j++ {
+			a, b := s[i+j], sub[j]
+			if a >= 'A' && a <= 'Z' {
+				a += 'a' - 'A'
+			}
+			if b >= 'A' && b <= 'Z' {
+				b += 'a' - 'A'
+			}
+			if a != b {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
 }
 
 // InsertChannel stores a channel record.

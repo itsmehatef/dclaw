@@ -39,12 +39,13 @@ const (
 	ErrInternal       = -32603
 
 	// dclaw custom
-	ErrAgentNotFound     = -32001 // reused semantic: "worker not found" in spec; dclaw v0.3 means agent
-	ErrAgentNotRunning   = -32002
-	ErrQuotaExceeded     = -32003
-	ErrSpawnFailed       = -32004
-	ErrTimeout           = -32005
-	ErrChannelNotReady   = -32006
+	ErrAgentNotFound       = -32001 // reused semantic: "worker not found" in spec; dclaw v0.3 means agent
+	ErrAgentNotRunning     = -32002
+	ErrQuotaExceeded       = -32003
+	ErrSpawnFailed         = -32004
+	ErrTimeout             = -32005
+	ErrChannelNotReady     = -32006
+	ErrWorkspaceForbidden  = -32007 // beta.1-paths-hardening: workspace path rejected by policy
 )
 
 // ---------- Handshake ----------
@@ -74,16 +75,17 @@ type AckResult struct {
 
 // Agent is the wire projection of an agent record.
 type Agent struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Image       string            `json:"image"`
-	Status      string            `json:"status"`
-	ContainerID string            `json:"container_id,omitempty"`
-	Workspace   string            `json:"workspace,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	CreatedAt   int64             `json:"created_at"`
-	UpdatedAt   int64             `json:"updated_at"`
+	ID                    string            `json:"id"`
+	Name                  string            `json:"name"`
+	Image                 string            `json:"image"`
+	Status                string            `json:"status"`
+	ContainerID           string            `json:"container_id,omitempty"`
+	Workspace             string            `json:"workspace,omitempty"`
+	WorkspaceTrustReason  string            `json:"workspace_trust_reason,omitempty"` // beta.1: operator-supplied reason when workspace bypasses allow-root policy
+	Env                   map[string]string `json:"env,omitempty"`
+	Labels                map[string]string `json:"labels,omitempty"`
+	CreatedAt             int64             `json:"created_at"`
+	UpdatedAt             int64             `json:"updated_at"`
 }
 
 // Channel is the wire projection of a channel record.
@@ -102,12 +104,13 @@ type Event struct {
 
 // AgentCreateParams is the request body for `agent.create`.
 type AgentCreateParams struct {
-	Name      string   `json:"name"`
-	Image     string   `json:"image"`
-	Workspace string   `json:"workspace,omitempty"`
-	Env       []string `json:"env,omitempty"`    // KEY=VAL
-	Labels    []string `json:"labels,omitempty"` // KEY=VAL
-	Channel   string   `json:"channel,omitempty"`
+	Name                 string   `json:"name"`
+	Image                string   `json:"image"`
+	Workspace            string   `json:"workspace,omitempty"`
+	WorkspaceTrustReason string   `json:"workspace_trust_reason,omitempty"` // beta.1: operator override of workspace allow-root policy
+	Env                  []string `json:"env,omitempty"`                    // KEY=VAL
+	Labels               []string `json:"labels,omitempty"`                 // KEY=VAL
+	Channel              string   `json:"channel,omitempty"`
 }
 
 // AgentCreateResult is the response for `agent.create`.
