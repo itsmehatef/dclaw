@@ -108,7 +108,7 @@ func renderWorkspaceForbidden(cmd *cobra.Command, rpcErr *protocol.RPCError) {
 	// caller does not have one configured we surface the "(not configured)"
 	// line — the daemon does not know the caller's config file.
 	allowRoot := "(not configured — run 'dclaw config set workspace-root <path>')"
-	paths, perr := config.Resolve("", "")
+	paths, perr := config.Resolve(stateDirFlag, "")
 	if perr == nil {
 		if fc, ferr := config.ReadConfigFile(paths.StateDir); ferr == nil && fc.WorkspaceRoot != "" {
 			allowRoot = fc.WorkspaceRoot

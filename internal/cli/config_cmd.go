@@ -25,10 +25,7 @@ var configGetCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key := args[0]
-		// PR-C is based on PR-A (no --state-dir flag); resolver picks up
-		// DCLAW_STATE_DIR env or the default ~/.dclaw. Once PR-B lands in
-		// the series, the flag will flow through config.Resolve automatically.
-		paths, err := config.Resolve("", "")
+		paths, err := config.Resolve(stateDirFlag, "")
 		if err != nil {
 			return err
 		}
@@ -57,10 +54,7 @@ var configSetCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key, value := args[0], args[1]
-		// PR-C is based on PR-A (no --state-dir flag); resolver picks up
-		// DCLAW_STATE_DIR env or the default ~/.dclaw. Once PR-B lands in
-		// the series, the flag will flow through config.Resolve automatically.
-		paths, err := config.Resolve("", "")
+		paths, err := config.Resolve(stateDirFlag, "")
 		if err != nil {
 			return err
 		}
