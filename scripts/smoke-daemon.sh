@@ -1,163 +1,235 @@
 #!/usr/bin/env bash
 # Phase 3 integration smoke: spin up dclawd, exercise full CRUD, tear down.
 # Requires docker reachable on the host and dclaw-agent:v0.1 built (phase 1).
+#
+# beta.1-paths-hardening: This script NEVER reassigns the user's HOME env var
+# and NEVER runs rm -rf against any path it did not create via mktemp. All
+# daemon state is isolated via DCLAW_STATE_DIR + --state-dir, belt-and-suspenders.
 set -euo pipefail
 
-# Isolate HOME so the smoke run does not touch the developer's real ~/.dclaw
-# state (state.db, pidfile, logs). Any dclaw/dclawd child process resolves
-# $HOME/.dclaw relative to this temp dir. Cleaned up on EXIT alongside STATE_DIR.
-# NOTE: this MUST happen before any dclaw invocation below.
-export HOME
-HOME=$(mktemp -d -t dclaw-smoke-home-XXXXXXXX)
+# TMPDIR can be injected by parent shells, CI runners, or misconfigured
+# environments. Require it to be one of the known-safe prefixes, else unset.
+if [ -n "${TMPDIR:-}" ]; then
+  case "$TMPDIR" in
+    /tmp|/tmp/*|/var/folders|/var/folders/*|/private/tmp|/private/tmp/*) ;;
+    *) echo "refuse: TMPDIR=$TMPDIR outside expected prefix" >&2; exit 1;;
+  esac
+fi
 
-# Smoke-test agent names created across Tests 3-13. The `smoke-` prefix keeps
-# them distinct from any user-managed agents (which get the `dclaw-` prefix on
-# the container side — see internal/daemon/lifecycle.go). Cleaned up at startup
-# AND on EXIT to prevent stale containers from prior crashed runs causing
-# false "name already in use" failures.
-#
-# The container name the daemon actually creates is `dclaw-<agent-name>`, so
-# `dclaw-smoke-daemon`, `dclaw-smoke-dup`, etc. These prefixes guarantee we
-# never collide with (or wipe) a real user agent.
-SMOKE_AGENT_NAMES=(smoke-daemon smoke-dup smoke-chatbot smoke-chatbot13)
+SMOKE_STATE=$(mktemp -d -t dclaw-smoke-state-XXXXXXXX)
+# Prefix whitelist: mktemp -d without -t can escape; validate belt-and-suspenders.
+case "$SMOKE_STATE" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: SMOKE_STATE=$SMOKE_STATE outside expected prefix" >&2; exit 1;;
+esac
+
+SMOKE_AGENT_NAMES=(smoke-daemon smoke-dup smoke-chatbot smoke-chatbot13 smoke-trusted)
 
 wipe_smoke_containers() {
   for name in "${SMOKE_AGENT_NAMES[@]}"; do
-    # Container name prefix is `dclaw-` (added by daemon's lifecycle layer).
     docker rm -f "dclaw-${name}" >/dev/null 2>&1 || true
   done
 }
 
 DCLAW_BIN="${DCLAW_BIN:-./bin/dclaw}"
 DCLAWD_BIN="${DCLAWD_BIN:-./bin/dclawd}"
-STATE_DIR="${STATE_DIR:-$(mktemp -d -t dclaw-smoke-XXXX)}"
-SOCKET="$STATE_DIR/dclaw.sock"
-
+SOCKET="$SMOKE_STATE/dclaw.sock"
 export DCLAWD_BIN
-pass() { echo "PASS: $*"; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# Arm the trap BEFORE exporting anything or running any command that could fail.
+# ${SMOKE_STATE:?refuse empty} ensures we never expand to `rm -rf ` on an unset var.
 cleanup() {
   "$DCLAW_BIN" --daemon-socket "$SOCKET" daemon stop >/dev/null 2>&1 || true
   wipe_smoke_containers
-  rm -rf "$STATE_DIR" || true
-  rm -rf "$HOME" || true
+  rm -rf "${SMOKE_STATE:?refuse empty}"
 }
 trap cleanup EXIT
 
-# Pre-run cleanup: wipe any smoke containers left over from a crashed prior run.
-wipe_smoke_containers
+export DCLAW_STATE_DIR="$SMOKE_STATE"
+
+pass() { echo "PASS: $*"; }
+fail() { echo "FAIL: $*" >&2; exit 1; }
+
+wipe_smoke_containers  # Pre-run cleanup of stale containers from crashed prior runs.
 
 echo "--- Test 1: daemon start ---"
-"$DCLAW_BIN" --daemon-socket "$SOCKET" daemon start || fail "daemon start"
+"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" daemon start || fail "daemon start"
 test -S "$SOCKET" || fail "socket not created"
 pass "daemon start"
 
 echo "--- Test 2: daemon status ---"
-"$DCLAW_BIN" --daemon-socket "$SOCKET" daemon status | grep -q "agents=0" || fail "status lacks agents=0"
+"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" daemon status | grep -q "agents=0" || fail "status lacks agents=0"
 pass "daemon status"
 
 echo "--- Test 3: agent create ---"
-"$DCLAW_BIN" --daemon-socket "$SOCKET" agent create smoke-daemon \
-  --image=dclaw-agent:v0.1 --workspace="$STATE_DIR" || fail "create"
+"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" agent create smoke-daemon \
+  --image=dclaw-agent:v0.1 --workspace="$SMOKE_STATE" || fail "create"
 pass "agent create"
 
 echo "--- Test 4: agent list shows smoke-daemon ---"
-"$DCLAW_BIN" --daemon-socket "$SOCKET" agent list | grep -q smoke-daemon || fail "list missing smoke-daemon"
+"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" agent list | grep -q smoke-daemon || fail "list missing smoke-daemon"
 pass "agent list"
 
 echo "--- Test 5: agent get smoke-daemon ---"
-"$DCLAW_BIN" --daemon-socket "$SOCKET" agent get smoke-daemon -o json | grep -q '"name": *"smoke-daemon"' || fail "get json"
+"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" agent get smoke-daemon -o json | grep -q '"name": *"smoke-daemon"' || fail "get json"
 pass "agent get"
 
 echo "--- Test 6: agent delete ---"
-"$DCLAW_BIN" --daemon-socket "$SOCKET" agent delete smoke-daemon || fail "delete"
+"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" agent delete smoke-daemon || fail "delete"
 pass "agent delete"
 
 echo "--- Test 7: daemon stop ---"
-"$DCLAW_BIN" --daemon-socket "$SOCKET" daemon stop || fail "stop"
+"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" daemon stop || fail "stop"
 pass "daemon stop"
 
 # ---- NEGATIVE PATH TESTS ----
 # These tests verify that the daemon and CLI return proper errors for invalid
-# operations. Each test restarts the daemon in a fresh STATE_DIR because some
+# operations. Each test restarts the daemon in a fresh state-dir because some
 # negative paths leave the daemon in a broken state.
 
 echo "--- Test 8: duplicate agent name is rejected ---"
-# Restart daemon for this test.
-STATE_DIR_NEG=$(mktemp -d -t dclaw-smoke-neg-XXXX)
+STATE_DIR_NEG=$(mktemp -d -t dclaw-smoke-neg-XXXXXXXX)
+case "$STATE_DIR_NEG" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: STATE_DIR_NEG=$STATE_DIR_NEG outside expected prefix" >&2; exit 1;;
+esac
 SOCKET_NEG="$STATE_DIR_NEG/dclaw.sock"
-"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" daemon start || fail "neg-start"
-"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" agent create smoke-dup \
+"$DCLAW_BIN" --state-dir "$STATE_DIR_NEG" --daemon-socket "$SOCKET_NEG" daemon start || fail "neg-start"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_NEG" --daemon-socket "$SOCKET_NEG" agent create smoke-dup \
   --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_NEG" || fail "dup-create-1"
-if "$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" agent create smoke-dup \
+if "$DCLAW_BIN" --state-dir "$STATE_DIR_NEG" --daemon-socket "$SOCKET_NEG" agent create smoke-dup \
   --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_NEG" 2>/dev/null; then
   fail "duplicate agent name should have been rejected"
 fi
-"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG" daemon stop >/dev/null 2>&1 || true
-rm -rf "$STATE_DIR_NEG"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_NEG" --daemon-socket "$SOCKET_NEG" daemon stop >/dev/null 2>&1 || true
+rm -rf "${STATE_DIR_NEG:?refuse empty}"
 pass "duplicate agent name rejected"
 
 echo "--- Test 9: get non-existent agent returns error ---"
-STATE_DIR_NEG2=$(mktemp -d -t dclaw-smoke-neg2-XXXX)
+STATE_DIR_NEG2=$(mktemp -d -t dclaw-smoke-neg2-XXXXXXXX)
+case "$STATE_DIR_NEG2" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: STATE_DIR_NEG2=$STATE_DIR_NEG2 outside expected prefix" >&2; exit 1;;
+esac
 SOCKET_NEG2="$STATE_DIR_NEG2/dclaw.sock"
-"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG2" daemon start || fail "neg2-start"
-if "$DCLAW_BIN" --daemon-socket "$SOCKET_NEG2" agent get nosuchagent 2>/dev/null; then
+"$DCLAW_BIN" --state-dir "$STATE_DIR_NEG2" --daemon-socket "$SOCKET_NEG2" daemon start || fail "neg2-start"
+if "$DCLAW_BIN" --state-dir "$STATE_DIR_NEG2" --daemon-socket "$SOCKET_NEG2" agent get nosuchagent 2>/dev/null; then
   fail "get non-existent agent should have failed"
 fi
-"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG2" daemon stop >/dev/null 2>&1 || true
-rm -rf "$STATE_DIR_NEG2"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_NEG2" --daemon-socket "$SOCKET_NEG2" daemon stop >/dev/null 2>&1 || true
+rm -rf "${STATE_DIR_NEG2:?refuse empty}"
 pass "get non-existent agent returned error"
 
 echo "--- Test 10: daemon already-running is idempotent ---"
-STATE_DIR_NEG3=$(mktemp -d -t dclaw-smoke-neg3-XXXX)
+STATE_DIR_NEG3=$(mktemp -d -t dclaw-smoke-neg3-XXXXXXXX)
+case "$STATE_DIR_NEG3" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: STATE_DIR_NEG3=$STATE_DIR_NEG3 outside expected prefix" >&2; exit 1;;
+esac
 SOCKET_NEG3="$STATE_DIR_NEG3/dclaw.sock"
-"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG3" daemon start || fail "neg3-start-1"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_NEG3" --daemon-socket "$SOCKET_NEG3" daemon start || fail "neg3-start-1"
 # Starting again should print "already running" and exit 0, not error.
-"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG3" daemon start || fail "neg3-start-2 (idempotent start failed)"
-"$DCLAW_BIN" --daemon-socket "$SOCKET_NEG3" daemon stop >/dev/null 2>&1 || true
-rm -rf "$STATE_DIR_NEG3"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_NEG3" --daemon-socket "$SOCKET_NEG3" daemon start || fail "neg3-start-2 (idempotent start failed)"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_NEG3" --daemon-socket "$SOCKET_NEG3" daemon stop >/dev/null 2>&1 || true
+rm -rf "${STATE_DIR_NEG3:?refuse empty}"
 pass "daemon start is idempotent"
 
 echo "--- Test 11: daemon CLI fails gracefully when daemon is not running ---"
-BAD_SOCKET="/tmp/dclaw-smoke-notexist-$$.sock"
-OUT=$("$DCLAW_BIN" --daemon-socket "$BAD_SOCKET" agent list 2>&1 || true)
+BAD_SOCKET="$SMOKE_STATE/dclaw-smoke-notexist-$$.sock"
+OUT=$("$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$BAD_SOCKET" agent list 2>&1 || true)
 echo "$OUT" | grep -qi "not running\|no such file\|connection refused\|dial" \
   || fail "expected daemon-not-running error, got: $OUT"
 pass "CLI fails gracefully when daemon not running"
 
 echo "--- Test 12: agent chat RPC smoke (exec proxy) ---"
-STATE_DIR_CHAT=$(mktemp -d -t dclaw-smoke-chat-XXXX)
+STATE_DIR_CHAT=$(mktemp -d -t dclaw-smoke-chat-XXXXXXXX)
+case "$STATE_DIR_CHAT" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: STATE_DIR_CHAT=$STATE_DIR_CHAT outside expected prefix" >&2; exit 1;;
+esac
 SOCKET_CHAT="$STATE_DIR_CHAT/dclaw.sock"
-"$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" daemon start || fail "chat-start"
-"$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" agent create smoke-chatbot \
+"$DCLAW_BIN" --state-dir "$STATE_DIR_CHAT" --daemon-socket "$SOCKET_CHAT" daemon start || fail "chat-start"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_CHAT" --daemon-socket "$SOCKET_CHAT" agent create smoke-chatbot \
   --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_CHAT" || fail "chat-create"
-"$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" agent start smoke-chatbot || fail "chat-agent-start"
-OUT=$("$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" agent exec smoke-chatbot -- echo "smoke-ok" 2>&1)
+"$DCLAW_BIN" --state-dir "$STATE_DIR_CHAT" --daemon-socket "$SOCKET_CHAT" agent start smoke-chatbot || fail "chat-agent-start"
+OUT=$("$DCLAW_BIN" --state-dir "$STATE_DIR_CHAT" --daemon-socket "$SOCKET_CHAT" agent exec smoke-chatbot -- echo "smoke-ok" 2>&1)
 echo "$OUT" | grep -q "smoke-ok" || fail "expected 'smoke-ok' in exec output, got: $OUT"
-"$DCLAW_BIN" --daemon-socket "$SOCKET_CHAT" daemon stop >/dev/null 2>&1 || true
-rm -rf "$STATE_DIR_CHAT"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_CHAT" --daemon-socket "$SOCKET_CHAT" daemon stop >/dev/null 2>&1 || true
+rm -rf "${STATE_DIR_CHAT:?refuse empty}"
 pass "agent chat RPC smoke"
 
 echo "--- Test 13: agent chat real round-trip (requires ANTHROPIC_API_KEY) ---"
 if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${ANTHROPIC_OAUTH_TOKEN:-}" ]; then
   echo "SKIP: Test 13 requires ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN — skipping (set the var to enable)"
 else
-  STATE_DIR_T13=$(mktemp -d -t dclaw-smoke-t13-XXXX)
+  STATE_DIR_T13=$(mktemp -d -t dclaw-smoke-t13-XXXXXXXX)
+  case "$STATE_DIR_T13" in
+    /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+    *) echo "refuse: STATE_DIR_T13=$STATE_DIR_T13 outside expected prefix" >&2; exit 1;;
+  esac
   SOCKET_T13="$STATE_DIR_T13/dclaw.sock"
-  "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" daemon start || fail "t13-start"
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T13" --daemon-socket "$SOCKET_T13" daemon start || fail "t13-start"
   # Create agent with the API key; --env inheritance handles the key if not set.
-  "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" agent create smoke-chatbot13 \
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T13" --daemon-socket "$SOCKET_T13" agent create smoke-chatbot13 \
     --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T13" || fail "t13-create"
-  "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" agent start smoke-chatbot13 || fail "t13-agent-start"
-  OUT=$("$DCLAW_BIN" --daemon-socket "$SOCKET_T13" agent chat smoke-chatbot13 \
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T13" --daemon-socket "$SOCKET_T13" agent start smoke-chatbot13 || fail "t13-agent-start"
+  OUT=$("$DCLAW_BIN" --state-dir "$STATE_DIR_T13" --daemon-socket "$SOCKET_T13" agent chat smoke-chatbot13 \
     --one-shot "reply with only the word: SMOKE_CONFIRMED" \
     --timeout 90s 2>&1) || fail "t13-chat-cmd failed (exit $?)"
   echo "$OUT" | grep -qi "SMOKE_CONFIRMED\|smoke_confirmed\|smoke confirmed" \
     || fail "Test 13 expected SMOKE_CONFIRMED in chat output, got: $OUT"
-  "$DCLAW_BIN" --daemon-socket "$SOCKET_T13" daemon stop >/dev/null 2>&1 || true
-  rm -rf "$STATE_DIR_T13"
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T13" --daemon-socket "$SOCKET_T13" daemon stop >/dev/null 2>&1 || true
+  rm -rf "${STATE_DIR_T13:?refuse empty}"
   pass "agent chat real round-trip"
 fi
+
+# ---- PATH-HARDENING TESTS (Tests 14-16) ----
+# These exercise the validator, trust override, and audit log. They share a
+# single daemon instance bound to $SMOKE_STATE so the audit.log accumulates
+# entries from both a forbidden create (Test 14) and a trust-override create
+# (Test 15). Test 16 then greps that single audit.log for both outcomes.
+
+echo "--- Test 14: validator rejection on /etc ---"
+"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" daemon start || fail "t14-start"
+set +e
+T14_STDERR=$("$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" agent create forbidden \
+  --image=dclaw-agent:v0.1 --workspace=/etc 2>&1 >/dev/null)
+T14_EXIT=$?
+set -e
+if [ "$T14_EXIT" -ne 65 ]; then
+  fail "Test 14 expected exit 65, got exit $T14_EXIT (stderr: $T14_STDERR)"
+fi
+echo "$T14_STDERR" | grep -q "workspace_forbidden" \
+  || fail "Test 14 expected 'workspace_forbidden' in stderr, got: $T14_STDERR"
+pass "validator rejection on /etc (exit 65 + workspace_forbidden)"
+
+echo "--- Test 15: trust override via --workspace-trust ---"
+# Configure workspace-root to /tmp so the trusted path still needs trust (the
+# path lives under /tmp but we pass --workspace-trust unconditionally per spec).
+"$DCLAW_BIN" --state-dir "$SMOKE_STATE" config set workspace-root /tmp || fail "t15-config-set"
+TRUSTED_WS="/tmp/smoke-trusted-ws-$$"
+mkdir -p "$TRUSTED_WS"
+"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" agent create smoke-trusted \
+  --image=dclaw-agent:v0.1 --workspace="$TRUSTED_WS" \
+  --workspace-trust "smoke test" || fail "t15-create"
+"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" agent describe smoke-trusted \
+  | grep -q "smoke test" \
+  || fail "Test 15 expected 'smoke test' in describe output"
+rm -rf "$TRUSTED_WS"
+pass "trust override accepted and surfaced in describe"
+
+echo "--- Test 16: audit.log contains forbidden + trust entries ---"
+AUDIT_LOG="$SMOKE_STATE/audit.log"
+test -f "$AUDIT_LOG" || fail "Test 16 expected $AUDIT_LOG to exist"
+FORBIDDEN_COUNT=$(grep -c 'outcome":"forbidden"' "$AUDIT_LOG" || true)
+TRUST_COUNT=$(grep -c 'outcome":"trust"' "$AUDIT_LOG" || true)
+if [ "$FORBIDDEN_COUNT" -lt 1 ]; then
+  fail "Test 16 expected at least one outcome=forbidden line in $AUDIT_LOG"
+fi
+if [ "$TRUST_COUNT" -lt 1 ]; then
+  fail "Test 16 expected at least one outcome=trust line in $AUDIT_LOG"
+fi
+"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" daemon stop >/dev/null 2>&1 || true
+pass "audit.log contains forbidden + trust entries (forbidden=$FORBIDDEN_COUNT trust=$TRUST_COUNT)"
 
 echo "All daemon smoke tests passed."

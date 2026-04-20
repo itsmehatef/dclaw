@@ -42,10 +42,13 @@ test: ## Run unit tests
 vet: ## Run go vet
 	$(GO) vet ./...
 
-lint: ## Run golangci-lint (no-op if not installed)
+lint: ## Run golangci-lint + shellcheck (each no-op if not installed)
 	@command -v golangci-lint >/dev/null 2>&1 \
 		&& golangci-lint run \
 		|| echo "golangci-lint not installed; skipping"
+	@command -v shellcheck >/dev/null 2>&1 \
+		&& shellcheck scripts/*.sh agent/*.sh \
+		|| echo "shellcheck not installed; skipping"
 
 fmt: ## Format code
 	$(GO) fmt ./...

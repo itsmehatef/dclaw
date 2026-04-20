@@ -23,7 +23,7 @@ The agent runtime is powered by [pi-mono](https://github.com/badlogic/pi-mono) (
 
 ![dclaw Platform Architecture](docker-claw-canonical.png)
 
-See [docs/architecture.md](docs/architecture.md) for the full architecture document covering core principles, sandboxing model, threat model, dependency decisions, and build phases.
+See [docs/architecture.md](docs/architecture.md) for the full architecture document covering core principles, sandboxing model, threat model, dependency decisions, and build phases. See [docs/workspace-root.md](docs/workspace-root.md) for the workspace-path validator runbook (how to configure `workspace-root`, `--workspace-trust` escape hatch, audit log format, common errors).
 
 ## Project Structure
 
