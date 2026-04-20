@@ -3,10 +3,12 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 
+	"github.com/itsmehatef/dclaw/internal/audit"
+	"github.com/itsmehatef/dclaw/internal/paths"
 	"github.com/itsmehatef/dclaw/internal/protocol"
 	"github.com/itsmehatef/dclaw/internal/sandbox"
 	"github.com/itsmehatef/dclaw/internal/store"
@@ -26,14 +28,16 @@ type Router struct {
 
 type handlerFunc func(ctx context.Context, params json.RawMessage) (any, *protocol.RPCError)
 
-// NewRouter constructs and registers all v0.3 handlers.
-func NewRouter(log *slog.Logger, repo *store.Repo, docker *sandbox.DockerClient) *Router {
+// NewRouter constructs and registers all v0.3 handlers. policy and audit
+// are passed through to NewLifecycle; both are used by AgentCreate's
+// workspace-validator path.
+func NewRouter(log *slog.Logger, repo *store.Repo, docker *sandbox.DockerClient, policy paths.Policy, auditLog *audit.Logger) *Router {
 	r := &Router{
 		log:    log,
 		repo:   repo,
 		docker: docker,
 	}
-	r.lifecycle = NewLifecycle(log, repo, docker)
+	r.lifecycle = NewLifecycle(log, repo, docker, policy, auditLog)
 
 	r.handlers = map[string]handlerFunc{
 		// Daemon health
@@ -344,17 +348,39 @@ func (r *Router) handleChannelDetach(ctx context.Context, params json.RawMessage
 // ---------- helpers ----------
 
 // mapError translates a lifecycle-layer error into a wire-protocol RPCError.
+//
+// beta.1-paths-hardening: rewritten from a substring-match ladder to an
+// errors.Is switch so the error classification is robust against message
+// rewording and so new sentinel types (paths.ErrWorkspaceForbidden,
+// store.ErrNotFound, store.ErrNameTaken, sandbox.ErrDockerFailure) plug
+// in without re-ordering string cases.
+//
+// The paths.ErrWorkspaceForbidden arm populates the Data envelope with
+// the wire shape docs/phase-3-beta1-paths-hardening-plan.md §8 requires:
+// {"error":"workspace_forbidden","resolved":"<canonical>"}.  The
+// allow_root field is intentionally omitted here because router has no
+// policy context; the CLI renderer fills it from the user's own config
+// so the operator sees the root they configured, not a stale snapshot.
 func mapError(err error) *protocol.RPCError {
 	if err == nil {
 		return nil
 	}
 	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "not found"):
+	case errors.Is(err, paths.ErrWorkspaceForbidden):
+		return &protocol.RPCError{
+			Code:    protocol.ErrWorkspaceForbidden,
+			Message: msg,
+			Data: map[string]any{
+				"error":  "workspace_forbidden",
+				"reason": msg,
+			},
+		}
+	case errors.Is(err, store.ErrNotFound):
 		return &protocol.RPCError{Code: protocol.ErrAgentNotFound, Message: msg}
-	case strings.Contains(msg, "already exists"):
+	case errors.Is(err, store.ErrNameTaken):
 		return &protocol.RPCError{Code: protocol.ErrInvalidParams, Message: msg}
-	case strings.Contains(msg, "docker"):
+	case errors.Is(err, sandbox.ErrDockerFailure):
 		return &protocol.RPCError{Code: protocol.ErrSpawnFailed, Message: msg}
 	default:
 		return &protocol.RPCError{Code: protocol.ErrInternal, Message: msg}

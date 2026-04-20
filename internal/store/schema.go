@@ -53,3 +53,17 @@ func (r *Repo) Migrate(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Rollback undoes one migration. Used by tests to exercise the down path.
+// Production callers should use dclawd's --migrate-only flag for rollbacks,
+// not this entrypoint.
+func (r *Repo) Rollback(ctx context.Context) error {
+	goose.SetBaseFS(migrationFS)
+	if err := goose.SetDialect("sqlite"); err != nil {
+		return fmt.Errorf("goose dialect: %w", err)
+	}
+	if err := goose.DownContext(ctx, r.db, "migrations"); err != nil {
+		return fmt.Errorf("goose down: %w", err)
+	}
+	return nil
+}

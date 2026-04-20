@@ -13,14 +13,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"os/user"
 	"syscall"
 
+	"github.com/itsmehatef/dclaw/internal/audit"
+	"github.com/itsmehatef/dclaw/internal/config"
 	"github.com/itsmehatef/dclaw/internal/daemon"
+	"github.com/itsmehatef/dclaw/internal/paths"
 	"github.com/itsmehatef/dclaw/internal/sandbox"
 	"github.com/itsmehatef/dclaw/internal/store"
 	"github.com/itsmehatef/dclaw/internal/version"
@@ -84,6 +89,18 @@ func main() {
 	}
 	defer docker.Close()
 
+	// beta.1-paths-hardening: load the workspace-root allow policy and
+	// open the audit log. Both are daemon-lifetime objects; the audit
+	// logger is closed on shutdown. Failure to open the audit log is
+	// fatal — we refuse to run without an audit trail for agent-create.
+	policy := buildPolicy(logger, cfg.StateDir)
+	auditLog, err := audit.New(cfg.StateDir)
+	if err != nil {
+		logger.Error("audit open failed", "err", err)
+		os.Exit(65)
+	}
+	defer auditLog.Close()
+
 	// Build context that cancels on SIGTERM/SIGINT.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -95,6 +112,13 @@ func main() {
 	}
 	defer cfg.RemovePIDFile()
 
+	// Legacy-scan: warn once per pre-beta.1 agent with an out-of-root or
+	// unvalidated workspace. Skips agents that already carry a trust
+	// reason. Does NOT block startup — operators need to be able to
+	// start dclawd even if every legacy agent fails the current policy,
+	// because `agent delete` is the prescribed remediation.
+	legacyScan(ctx, logger, repo, policy)
+
 	// Start background status reconciler.
 	// Run initial sync immediately (before the first 2s tick) so the DB is
 	// accurate as soon as the daemon starts — e.g. after a daemon restart where
@@ -105,7 +129,7 @@ func main() {
 	go reconciler.Run(ctx)
 
 	// Wire and run the server.
-	srv := daemon.NewServer(cfg, logger, repo, docker)
+	srv := daemon.NewServer(cfg, logger, repo, docker, policy, auditLog)
 
 	if _ = foreground; true {
 		if err := srv.Run(ctx); err != nil {
@@ -115,6 +139,58 @@ func main() {
 	}
 
 	logger.Info("dclawd stopped cleanly")
+}
+
+// buildPolicy constructs the runtime paths.Policy from the resolved config.
+// Starts from paths.DefaultDenylist and appends the daemon user's $HOME so
+// a workspace pointing at the operator's home dir directly is refused.
+// On config read failure we log but keep going with an empty AllowRoot —
+// the validator will then reject every non-trust path with the "not
+// configured" message, which is the desired fail-closed behavior.
+func buildPolicy(logger *slog.Logger, stateDir string) paths.Policy {
+	dl := append([]string(nil), paths.DefaultDenylist...)
+	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+		dl = append(dl, u.HomeDir)
+	}
+
+	fc, err := config.ReadConfigFile(stateDir)
+	if err != nil {
+		logger.Warn("config.toml read failed; running with empty allow-root (all agent.create without --workspace-trust will be rejected)", "err", err)
+		return paths.Policy{Denylist: dl}
+	}
+	return paths.Policy{AllowRoot: fc.WorkspaceRoot, Denylist: dl}
+}
+
+// legacyScan logs one Warn per pre-beta.1 agent whose workspace does not
+// validate under the current policy and has no WorkspaceTrustReason set.
+// Intentionally non-blocking: the scan surfaces hazards but does not
+// modify state or refuse startup.
+func legacyScan(ctx context.Context, logger *slog.Logger, repo *store.Repo, policy paths.Policy) {
+	rows, err := repo.ListAgents(ctx)
+	if err != nil {
+		logger.Warn("legacy scan: list agents failed", "err", err)
+		return
+	}
+	for _, r := range rows {
+		if r.Workspace == "" {
+			continue
+		}
+		if r.WorkspaceTrustReason != "" {
+			continue
+		}
+		if _, verr := policy.Validate(r.Workspace); verr != nil {
+			// Only log truly forbidden cases; a benign error path here
+			// (e.g., config missing) would fire a warning for every
+			// agent, which is noisy and not actionable.
+			if errors.Is(verr, paths.ErrWorkspaceForbidden) {
+				logger.Warn("legacy agent with unverified workspace path",
+					"name", r.Name,
+					"workspace", r.Workspace,
+					"reason", verr.Error(),
+				)
+			}
+		}
+	}
 }
 
 // newLogger constructs a slog.Logger writing to cfg.LogPath (falls back to

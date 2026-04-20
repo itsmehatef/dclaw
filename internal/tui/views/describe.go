@@ -36,6 +36,9 @@ func (m *DescribeModel) View(width, height int) string {
 	b.WriteString(fmt.Sprintf("  Image:     %s\n", m.agent.Image))
 	b.WriteString(fmt.Sprintf("  Status:    %s\n", m.agent.Status))
 	b.WriteString(fmt.Sprintf("  Workspace: %s\n", m.agent.Workspace))
+	if m.agent.WorkspaceTrustReason != "" {
+		b.WriteString(fmt.Sprintf("  Workspace Trust: %s\n", m.agent.WorkspaceTrustReason))
+	}
 
 	if len(m.agent.Labels) > 0 {
 		b.WriteString("\nLabels\n")

@@ -14,13 +14,14 @@ var ErrDaemonNotImplemented = errors.New("dclaw daemon not yet implemented — s
 // Agent is a projection of the daemon's agent record suitable for display.
 // Fields are deliberately minimal for v0.2.0-cli; they will grow in v0.3+.
 type Agent struct {
-	Name      string            `json:"name"`
-	Image     string            `json:"image"`
-	Channel   string            `json:"channel,omitempty"`
-	Workspace string            `json:"workspace,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
-	Status    string            `json:"status,omitempty"` // running, stopped, ...
+	Name                 string            `json:"name"`
+	Image                string            `json:"image"`
+	Channel              string            `json:"channel,omitempty"`
+	Workspace            string            `json:"workspace,omitempty"`
+	WorkspaceTrustReason string            `json:"workspace_trust_reason,omitempty"`
+	Env                  map[string]string `json:"env,omitempty"`
+	Labels               map[string]string `json:"labels,omitempty"`
+	Status               string            `json:"status,omitempty"` // running, stopped, ...
 }
 
 // Channel is a projection of the daemon's channel record.

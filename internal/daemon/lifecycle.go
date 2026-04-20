@@ -10,6 +10,8 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"github.com/itsmehatef/dclaw/internal/audit"
+	"github.com/itsmehatef/dclaw/internal/paths"
 	"github.com/itsmehatef/dclaw/internal/protocol"
 	"github.com/itsmehatef/dclaw/internal/sandbox"
 	"github.com/itsmehatef/dclaw/internal/store"
@@ -23,12 +25,20 @@ type Lifecycle struct {
 	log    *slog.Logger
 	repo   *store.Repo
 	docker *sandbox.DockerClient
+	// policy and audit are nil in legacy tests that construct Lifecycle via
+	// NewLifecycleLegacy; the daemon always provides non-nil values via
+	// NewLifecycle. The nil guard lives in AgentCreate so tests can skip
+	// the validator entirely.
+	policy paths.Policy
+	audit  *audit.Logger
 }
 
 // NewLifecycle constructs a Lifecycle around an existing store + docker
-// client.
-func NewLifecycle(log *slog.Logger, repo *store.Repo, docker *sandbox.DockerClient) *Lifecycle {
-	return &Lifecycle{log: log, repo: repo, docker: docker}
+// client, a workspace policy, and an audit logger. The policy governs
+// every AgentCreate; the audit logger records one NDJSON line per decision.
+// Passing a nil *audit.Logger turns off audit writes (useful in tests).
+func NewLifecycle(log *slog.Logger, repo *store.Repo, docker *sandbox.DockerClient, policy paths.Policy, auditLog *audit.Logger) *Lifecycle {
+	return &Lifecycle{log: log, repo: repo, docker: docker, policy: policy, audit: auditLog}
 }
 
 // ---------- agent ----------
@@ -36,6 +46,17 @@ func NewLifecycle(log *slog.Logger, repo *store.Repo, docker *sandbox.DockerClie
 // AgentCreate inserts a new agent record and (if Docker reachable) creates
 // the container in "created" state (not started). Returns the populated
 // record.
+//
+// beta.1-paths-hardening: every call runs req.Workspace through
+// paths.Policy.Validate before anything else. On forbidden, we write one
+// audit line (outcome=forbidden) and return a wrapped ErrWorkspaceForbidden
+// that the router maps to protocol.ErrWorkspaceForbidden = -32007. When
+// the operator supplies a non-empty WorkspaceTrustReason we flip
+// AllowTrust on a per-call copy of the policy — bypassing the AllowRoot
+// Rel check but not the denylist — and record outcome=trust with the
+// reason string. On pass we record outcome=pass and hand the CANONICAL
+// path (not req.Workspace) to both Docker and the DB, so a TOCTOU swap
+// between validate and bind-mount cannot mount a different inode.
 func (l *Lifecycle) AgentCreate(ctx context.Context, req protocol.AgentCreateParams) (protocol.Agent, error) {
 	if strings.TrimSpace(req.Name) == "" {
 		return protocol.Agent{}, fmt.Errorf("agent name required")
@@ -44,8 +65,48 @@ func (l *Lifecycle) AgentCreate(ctx context.Context, req protocol.AgentCreatePar
 		return protocol.Agent{}, fmt.Errorf("agent image required")
 	}
 
-	if _, err := l.repo.GetAgent(ctx, req.Name); err == nil {
-		return protocol.Agent{}, fmt.Errorf("agent %q already exists", req.Name)
+	if existing, err := l.repo.GetAgent(ctx, req.Name); err == nil {
+		_ = existing
+		return protocol.Agent{}, fmt.Errorf("agent %q: %w", req.Name, store.ErrNameTaken)
+	}
+
+	// ---- workspace policy ----
+	canonical := ""
+	trusted := strings.TrimSpace(req.WorkspaceTrustReason) != ""
+	if req.Workspace != "" {
+		policy := l.policy
+		if trusted {
+			policy.AllowTrust = true
+		}
+		var err error
+		canonical, err = policy.Validate(req.Workspace)
+		if err != nil {
+			// Audit outcome=forbidden. Canonical is best-effort: Validate
+			// may have returned empty if the failure happened before
+			// canonicalization.
+			_ = l.writeAudit(req.Name, req.Workspace, canonical, "forbidden", err.Error())
+			return protocol.Agent{}, err
+		}
+		// Re-open under NOFOLLOW and re-validate. Hold the fd open until
+		// docker.CreateAgent returns so an attacker can't win the race
+		// between Validate and bind-mount.
+		fd, reCanon, err := paths.OpenSafe(canonical, policy)
+		if err != nil {
+			_ = l.writeAudit(req.Name, req.Workspace, canonical, "forbidden", err.Error())
+			return protocol.Agent{}, err
+		}
+		defer fd.Close()
+		canonical = reCanon
+
+		outcome := "pass"
+		if trusted {
+			outcome = "trust"
+		}
+		auditReason := ""
+		if trusted {
+			auditReason = req.WorkspaceTrustReason
+		}
+		_ = l.writeAudit(req.Name, req.Workspace, canonical, outcome, auditReason)
 	}
 
 	now := time.Now().Unix()
@@ -54,28 +115,32 @@ func (l *Lifecycle) AgentCreate(ctx context.Context, req protocol.AgentCreatePar
 	envMap := parseKVList(req.Env)
 	labelMap := parseKVList(req.Labels)
 
+	// Pass canonical — NOT req.Workspace — to the sandbox. If the workspace
+	// was empty (no bind-mount), canonical is "" and the sandbox skips the
+	// mount entirely, matching pre-beta.1 behavior.
 	containerID, err := l.docker.CreateAgent(ctx, sandbox.CreateSpec{
 		Name:      fmt.Sprintf("dclaw-%s", req.Name),
 		Image:     req.Image,
 		Env:       envMap,
 		Labels:    labelMap,
-		Workspace: req.Workspace,
+		Workspace: canonical,
 	})
 	if err != nil {
 		return protocol.Agent{}, fmt.Errorf("docker create: %w", err)
 	}
 
 	rec := store.AgentRecord{
-		ID:          id,
-		Name:        req.Name,
-		Image:       req.Image,
-		Status:      "created",
-		ContainerID: containerID,
-		Workspace:   req.Workspace,
-		Env:         jsonMustMarshal(envMap),
-		Labels:      jsonMustMarshal(labelMap),
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:                   id,
+		Name:                 req.Name,
+		Image:                req.Image,
+		Status:               "created",
+		ContainerID:          containerID,
+		Workspace:            canonical,
+		WorkspaceTrustReason: req.WorkspaceTrustReason,
+		Env:                  jsonMustMarshal(envMap),
+		Labels:               jsonMustMarshal(labelMap),
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 	if err := l.repo.InsertAgent(ctx, rec); err != nil {
 		// Best-effort cleanup of the orphaned container.
@@ -85,6 +150,20 @@ func (l *Lifecycle) AgentCreate(ctx context.Context, req protocol.AgentCreatePar
 
 	l.log.Info("agent created", "name", req.Name, "image", req.Image, "container_id", containerID)
 	return agentToWire(rec), nil
+}
+
+// writeAudit is a tiny helper so every AgentCreate branch logs through the
+// same call. Returns the audit error (callers ignore — audit failure is
+// non-fatal by policy).
+func (l *Lifecycle) writeAudit(agentName, raw, canonical, outcome, reason string) error {
+	if l.audit == nil {
+		return nil
+	}
+	if err := l.audit.LogDecision(agentName, raw, canonical, outcome, reason, paths.PolicyVersion); err != nil {
+		l.log.Warn("audit write failed", "err", err, "agent", agentName, "outcome", outcome)
+		return err
+	}
+	return nil
 }
 
 // AgentList returns all agents, enriching each record with the live Docker
@@ -111,7 +190,9 @@ func (l *Lifecycle) AgentList(ctx context.Context) ([]protocol.Agent, error) {
 func (l *Lifecycle) AgentGet(ctx context.Context, name string) (protocol.Agent, error) {
 	rec, err := l.repo.GetAgent(ctx, name)
 	if err != nil {
-		return protocol.Agent{}, fmt.Errorf("agent %q not found", name)
+		// Preserve the ErrNotFound wrap from store so the router's mapError
+		// errors.Is switch routes this correctly.
+		return protocol.Agent{}, err
 	}
 	if rec.ContainerID != "" {
 		if st, err := l.docker.InspectStatus(ctx, rec.ContainerID); err == nil {
@@ -143,7 +224,7 @@ func (l *Lifecycle) AgentDescribe(ctx context.Context, name string) (protocol.Ag
 func (l *Lifecycle) AgentUpdate(ctx context.Context, req protocol.AgentUpdateParams) (protocol.Agent, error) {
 	rec, err := l.repo.GetAgent(ctx, req.Name)
 	if err != nil {
-		return protocol.Agent{}, fmt.Errorf("agent %q not found", req.Name)
+		return protocol.Agent{}, err
 	}
 	if req.Image != "" && (rec.Status != "created" && rec.Status != "stopped" && rec.Status != "exited") {
 		return protocol.Agent{}, fmt.Errorf("cannot update image while agent is %s; stop it first", rec.Status)
@@ -169,7 +250,7 @@ func (l *Lifecycle) AgentUpdate(ctx context.Context, req protocol.AgentUpdatePar
 func (l *Lifecycle) AgentDelete(ctx context.Context, name string) error {
 	rec, err := l.repo.GetAgent(ctx, name)
 	if err != nil {
-		return fmt.Errorf("agent %q not found", name)
+		return err
 	}
 	if rec.ContainerID != "" {
 		_ = l.docker.StopAgent(ctx, rec.ContainerID, 10*time.Second)
@@ -187,7 +268,7 @@ func (l *Lifecycle) AgentDelete(ctx context.Context, name string) error {
 func (l *Lifecycle) AgentStart(ctx context.Context, name string) error {
 	rec, err := l.repo.GetAgent(ctx, name)
 	if err != nil {
-		return fmt.Errorf("agent %q not found", name)
+		return err
 	}
 	if rec.ContainerID == "" {
 		return fmt.Errorf("agent %q has no container", name)
@@ -224,7 +305,7 @@ func (l *Lifecycle) AgentStart(ctx context.Context, name string) error {
 func (l *Lifecycle) AgentStop(ctx context.Context, name string) error {
 	rec, err := l.repo.GetAgent(ctx, name)
 	if err != nil {
-		return fmt.Errorf("agent %q not found", name)
+		return err
 	}
 	if rec.ContainerID == "" {
 		return fmt.Errorf("agent %q has no container", name)
@@ -256,7 +337,7 @@ func (l *Lifecycle) AgentRestart(ctx context.Context, name string) error {
 func (l *Lifecycle) AgentLogsBulk(ctx context.Context, name string, tail int) ([]string, error) {
 	rec, err := l.repo.GetAgent(ctx, name)
 	if err != nil {
-		return nil, fmt.Errorf("agent %q not found", name)
+		return nil, err
 	}
 	if rec.ContainerID == "" {
 		return nil, fmt.Errorf("agent %q has no container", name)
@@ -271,7 +352,7 @@ func (l *Lifecycle) AgentLogsBulk(ctx context.Context, name string, tail int) ([
 func (l *Lifecycle) AgentExec(ctx context.Context, req protocol.AgentExecParams) (protocol.AgentExecResult, error) {
 	rec, err := l.repo.GetAgent(ctx, req.Name)
 	if err != nil {
-		return protocol.AgentExecResult{}, fmt.Errorf("agent %q not found", req.Name)
+		return protocol.AgentExecResult{}, err
 	}
 	if rec.ContainerID == "" {
 		return protocol.AgentExecResult{}, fmt.Errorf("agent %q has no container", req.Name)
@@ -341,15 +422,16 @@ func agentToWire(rec store.AgentRecord) protocol.Agent {
 		_ = json.Unmarshal([]byte(rec.Labels), &labels)
 	}
 	return protocol.Agent{
-		ID:          rec.ID,
-		Name:        rec.Name,
-		Image:       rec.Image,
-		Status:      rec.Status,
-		ContainerID: rec.ContainerID,
-		Workspace:   rec.Workspace,
-		Env:         env,
-		Labels:      labels,
-		CreatedAt:   rec.CreatedAt,
-		UpdatedAt:   rec.UpdatedAt,
+		ID:                   rec.ID,
+		Name:                 rec.Name,
+		Image:                rec.Image,
+		Status:               rec.Status,
+		ContainerID:          rec.ContainerID,
+		Workspace:            rec.Workspace,
+		WorkspaceTrustReason: rec.WorkspaceTrustReason,
+		Env:                  env,
+		Labels:               labels,
+		CreatedAt:            rec.CreatedAt,
+		UpdatedAt:            rec.UpdatedAt,
 	}
 }
