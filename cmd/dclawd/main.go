@@ -73,6 +73,13 @@ func main() {
 		os.Exit(65)
 	}
 
+	// beta.1-paths-hardening: resolve the workspace-root allow policy
+	// BEFORE the --migrate-only fast-path. buildPolicy is pure
+	// config-file-plus-env (no Docker, no socket), so running it here is
+	// free and also gives operators a way to verify which source resolved
+	// the allow-root from a `dclawd --migrate-only` probe (e.g. in CI).
+	policy := buildPolicy(logger, cfg.StateDir)
+
 	// --migrate-only: run migrations and exit. No daemon, no Docker, no socket.
 	// Invoked by `make migrate` and by operators who want to run migrations
 	// before starting the daemon (e.g. during upgrades).
@@ -89,11 +96,9 @@ func main() {
 	}
 	defer docker.Close()
 
-	// beta.1-paths-hardening: load the workspace-root allow policy and
-	// open the audit log. Both are daemon-lifetime objects; the audit
-	// logger is closed on shutdown. Failure to open the audit log is
-	// fatal — we refuse to run without an audit trail for agent-create.
-	policy := buildPolicy(logger, cfg.StateDir)
+	// Open the daemon-lifetime audit log. Closed on shutdown. Failure to
+	// open is fatal — we refuse to run without an audit trail for
+	// agent-create.
 	auditLog, err := audit.New(cfg.StateDir)
 	if err != nil {
 		logger.Error("audit open failed", "err", err)
@@ -147,6 +152,11 @@ func main() {
 // On config read failure we log but keep going with an empty AllowRoot —
 // the validator will then reject every non-trust path with the "not
 // configured" message, which is the desired fail-closed behavior.
+//
+// Precedence for the allow-root is: config file > DCLAW_WORKSPACE_ROOT env
+// var > unconfigured. The env var fallback makes single-invocation
+// overrides (e.g. container-ized tests, `make smoke`) work without
+// mutating the on-disk config.toml.
 func buildPolicy(logger *slog.Logger, stateDir string) paths.Policy {
 	dl := append([]string(nil), paths.DefaultDenylist...)
 	if u, err := user.Current(); err == nil && u.HomeDir != "" {
@@ -158,14 +168,34 @@ func buildPolicy(logger *slog.Logger, stateDir string) paths.Policy {
 		logger.Warn("config.toml read failed; running with empty allow-root (all agent.create without --workspace-trust will be rejected)", "err", err)
 		return paths.Policy{Denylist: dl}
 	}
-	return paths.Policy{AllowRoot: fc.WorkspaceRoot, Denylist: dl}
+
+	allowRoot := fc.WorkspaceRoot
+	if allowRoot == "" {
+		if env := os.Getenv(config.EnvWorkspaceRoot); env != "" {
+			logger.Info("using DCLAW_WORKSPACE_ROOT env var for workspace-root (config.toml unset)", "workspace_root", env)
+			allowRoot = env
+		}
+	}
+	return paths.Policy{AllowRoot: allowRoot, Denylist: dl}
 }
 
 // legacyScan logs one Warn per pre-beta.1 agent whose workspace does not
 // validate under the current policy and has no WorkspaceTrustReason set.
 // Intentionally non-blocking: the scan surfaces hazards but does not
 // modify state or refuse startup.
+//
+// When policy.AllowRoot is empty ("not configured"), every legacy agent
+// will trip ErrWorkspaceForbidden with the "no workspace-root configured"
+// reason — that warning has no per-agent signal because the remediation
+// is a single `dclaw config set workspace-root`, not `agent delete`. We
+// skip the scan in that case and log one info-level line instead. The
+// per-agent warnings only fire when an allow-root IS configured and
+// specific agents fall outside it.
 func legacyScan(ctx context.Context, logger *slog.Logger, repo *store.Repo, policy paths.Policy) {
+	if policy.AllowRoot == "" {
+		logger.Info("workspace-root not configured; skipping legacy-agent scan (set with 'dclaw config set workspace-root <path>')")
+		return
+	}
 	rows, err := repo.ListAgents(ctx)
 	if err != nil {
 		logger.Warn("legacy scan: list agents failed", "err", err)
@@ -179,9 +209,6 @@ func legacyScan(ctx context.Context, logger *slog.Logger, repo *store.Repo, poli
 			continue
 		}
 		if _, verr := policy.Validate(r.Workspace); verr != nil {
-			// Only log truly forbidden cases; a benign error path here
-			// (e.g., config missing) would fire a warning for every
-			// agent, which is noisy and not actionable.
 			if errors.Is(verr, paths.ErrWorkspaceForbidden) {
 				logger.Warn("legacy agent with unverified workspace path",
 					"name", r.Name,
