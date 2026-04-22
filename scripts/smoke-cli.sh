@@ -58,9 +58,9 @@ json="$("$DCLAW_BIN" agent list -o json 2>/dev/null)"
 code=$?
 set -e
 (( code == 69 )) || fail "expected exit 69, got $code"
-echo "$json" | grep -q '"error": *"feature_not_ready"' || fail "expected feature_not_ready in JSON"
+echo "$json" | grep -q '"error": *"daemon_unreachable"' || fail "expected daemon_unreachable in JSON"
 echo "$json" | grep -q '"exit_code": *69' || fail "expected exit_code 69 in JSON"
-pass "dclaw agent list -o json emits feature_not_ready"
+pass "dclaw agent list -o json emits daemon_unreachable"
 
 echo "--- Test 6: dclaw agent create without --image hits cobra's required-flag error path (exit 1) ---"
 set +e
