@@ -149,3 +149,47 @@ Using plan §13 checklist:
 ### Status
 
 All 6 commits on `beta.1-paths-hardening` awaiting Hatef's review. No push yet. Integration branches `pr-b-flag` and `pr-c-validator` still exist with stale stash entries — safe to delete after Hatef confirms the cherry-picks are good.
+
+---
+
+## 2026-04-21/22 — Review → ship → hotfix saga
+
+### Independent code review (2026-04-21)
+
+Dispatched a fresh reviewer agent on `beta.1-paths-hardening` tip `7307e14`. Verdict: **SHIP WITH SMALL FIXES.** No must-fix, no blockers. 5 should-fix + 6 nice-to-have findings. All 8 top threats (TOCTOU, symlink escape, NFC, APFS case-fold, NUL injection, allow-root-prefix-bypass, env injection, audit-log poisoning) verified addressed.
+
+Bundled 4 of the 5 should-fix items into **PR-E (`824fc81`)**: wired `DCLAW_WORKSPACE_ROOT` into `buildPolicy` (was dangling const since PR-B), extended TOML regex to accept inline comments + test, tightened legacy-scan guard to skip when allow-root is empty (previously noisy), removed stale `NewLifecycleLegacy` comment. 4 files, +65/-15. Item 5 (smoke Test 15 macOS workspace selection) stays a docker-CI follow-up.
+
+### Merge + tag (2026-04-22)
+
+Pushed branch to origin, opened PR #1. CI red on first push — not a regression but a latent test-gate bug from PR-C:
+
+**PR-F (`22429f2`):** Rows 08-11 of `policy_test.go` test macOS-specific paths (`/ETC` APFS case-fold, `/private/{etc,var,tmp}` firmlinks) that don't exist on Linux ext4 — `EvalSymlinks` errors before the denylist check, so the test assertion never matches. Rows 12-15 were already gated via `os.Stat` checks; PR-C build agent missed extending that gate to 08-11. Review agent missed it too. Added skip-guards (runtime.GOOS check for row 08 — APFS semantic; `os.Stat` for 09/10/11 — path-existence).
+
+**PR-G (`8b19ddb`):** After PR-F, `smoke-cli.sh` Test 5 failed. Investigation revealed this expectation had been stale **since alpha.1** — `dclaw agent list -o json` was asserted to emit `"error": "feature_not_ready"`, which was the v0.2.0-cli `RequireDaemon` stub shape. Alpha.1 replaced the stub with a real daemon call; `DaemonUnreachable` emits `"error": "daemon_unreachable"`. Every push to main since alpha.1 (2026-04-16) had red CI and nobody watched. Flipped the assertion. Not a beta.1 regression — a pre-existing bug our branch unmasked.
+
+PR #1 turned green (10 commits total). **Rebase-merged to main** with `gh pr merge --rebase --delete-branch`. Tag `v0.3.0-beta.1-paths-hardening` pushed. First green main-push CI since 2026-04-15.
+
+### Post-merge hotfix cascade
+
+Tag push triggered `docker-smoke` CI (only runs on `v*` tags). First actual end-to-end run of `smoke-daemon.sh` against the new paths-hardening policy — and it uncovered two more PR-D bugs because the build agent never had docker to validate against:
+
+**Hotfix 1 (`37c64d8`, tag `.1`):** Tests 3-13 (existing create flow) failed with `workspace_forbidden: no workspace-root configured`. PR-D added Tests 14-16 for the new policy but didn't adapt Tests 3-13 — they still called `agent create` without any allow-root set. Fix: `export DCLAW_WORKSPACE_ROOT="${DCLAW_WORKSPACE_ROOT:-/tmp}"` at script top. On Linux CI, `/tmp` is not denylisted and covers every mktemp dir. macOS local would still break (`/tmp` → `/private/tmp`, denylisted) — operator must override.
+
+**Hotfix 2 (`34367c5`, tag `.2`):** Test 14 then failed because the assertion grepped stderr for the literal `workspace_forbidden`, but the stderr renderer emits human prose. The machine-readable code only appears in `-o json` output. Rewrote Test 14 to use `-o json` + grep JSON. Tests 15/16 turned out to already be correct against the CLI contract (the dispatching agent pushed back on my spec and was right).
+
+**Tag `v0.3.0-beta.1-paths-hardening.2`:** full green (`build` 21s, `docker-smoke` 47s). Both earlier tags remain as historical markers.
+
+### Meta lessons
+
+- **Build agents without end-to-end validation ship untested assertions.** PR-D's Tests 14-16 were spec'd correctly but never exercised; docker wasn't reachable on the dev machine. Mitigation for future: require agents to run the target CI surface before reporting green, OR write assertions against the renderer directly (unit-level).
+- **Parallel build agents on a shared working tree race.** PR-B and PR-C's concurrent runs caused a `git checkout` swap mid-session; both recovered, but lesson holds — serialize, use worktree isolation, or branch-per-agent with explicit `git checkout` before any operation.
+- **Stale CI that nobody watches silently accumulates rot.** `main` had been red on `build` since alpha.1 (6 days) and docker-smoke on every tag since alpha.1 (5 tags). Our branch was the first to actually gate on CI because the earlier validator failure forced an investigation. Red CI is only useful if someone's watching.
+- **Independent code review catches real issues** (DCLAW_WORKSPACE_ROOT dead code, TOML inline-comment gap, legacy-scan comment/reality drift). It missed the PR-F test-gating bug (same way the build agent missed it). Review is necessary-not-sufficient — CI has to actually be green too.
+
+### Final state
+
+- Main tip: `34367c5`.
+- Latest green tag: `v0.3.0-beta.1-paths-hardening.2`.
+- CI: build green, docker-smoke green (tag-triggered).
+- Outstanding: follow-up GitHub issues (beta.2 sandbox hardening, easier setup for workspace-root, full TOML config, XDG split, Windows denylist, audit-log rotation, `dclaw doctor workspace`, Test 15 macOS workspace-root issue, polish umbrella) — Hatef to decide whether/how to file.
