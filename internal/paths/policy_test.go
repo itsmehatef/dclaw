@@ -211,6 +211,12 @@ func TestPolicyValidate(t *testing.T) {
 			input:      "/ETC",
 			wantErr:    true,
 			wantSubstr: "denylist",
+			skipIf: func(t *testing.T) bool {
+				// APFS is case-insensitive so /ETC folds to /etc → /private/etc
+				// (both denylisted). On Linux ext4 (case-sensitive) /ETC does
+				// not exist and EvalSymlinks errors before the denylist check.
+				return runtime.GOOS != "darwin"
+			},
 		},
 		// 9. /private/etc denylist
 		{
@@ -219,6 +225,12 @@ func TestPolicyValidate(t *testing.T) {
 			input:      "/private/etc",
 			wantErr:    true,
 			wantSubstr: "denylist",
+			skipIf: func(t *testing.T) bool {
+				// /private/etc is a macOS firmlink; absent on Linux CI,
+				// where EvalSymlinks errors before the denylist check runs.
+				_, err := os.Stat("/private/etc")
+				return err != nil
+			},
 		},
 		// 10. /private/var denylist — use the full denylist so /private/var
 		// is included even though test tempdirs normally need it stripped.
@@ -229,6 +241,11 @@ func TestPolicyValidate(t *testing.T) {
 			},
 			wantErr:    true,
 			wantSubstr: "denylist",
+			skipIf: func(t *testing.T) bool {
+				// /private/var is a macOS firmlink; absent on Linux CI.
+				_, err := os.Stat("/private/var")
+				return err != nil
+			},
 		},
 		// 11. /private/tmp denylist — see row 10 for why we swap the denylist.
 		{
@@ -238,6 +255,11 @@ func TestPolicyValidate(t *testing.T) {
 			},
 			wantErr:    true,
 			wantSubstr: "denylist",
+			skipIf: func(t *testing.T) bool {
+				// /private/tmp is a macOS firmlink; absent on Linux CI.
+				_, err := os.Stat("/private/tmp")
+				return err != nil
+			},
 		},
 		// 12. /Volumes denylist
 		{
