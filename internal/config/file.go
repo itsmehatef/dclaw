@@ -27,11 +27,12 @@ const configFileName = "config.toml"
 //
 //	workspace-root = "..."
 //
-// leading whitespace allowed, trailing whitespace allowed, the value
+// leading whitespace allowed, trailing whitespace allowed, optional
+// inline `# comment` trailing the value (TOML spec), and the value
 // itself may contain any non-quote characters. Double quotes are
 // mandatory; single quotes are not supported (we would need to decide
 // quoting semantics, out of scope for beta.1).
-var workspaceRootLineRE = regexp.MustCompile(`^\s*workspace-root\s*=\s*"([^"]*)"\s*$`)
+var workspaceRootLineRE = regexp.MustCompile(`^\s*workspace-root\s*=\s*"([^"]*)"\s*(#.*)?$`)
 
 // ReadConfigFile reads $stateDir/config.toml into a FileConfig. A missing
 // file returns a zero-value FileConfig and nil error — the expected

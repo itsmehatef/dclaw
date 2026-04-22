@@ -95,6 +95,27 @@ workspace-root = "/Users/alice/ws"
 	}
 }
 
+// TestReadConfigFileInlineComment verifies an inline `# comment` after the
+// value is accepted per the TOML spec. A user hand-editing config.toml
+// with a trailing annotation must not be punished with an
+// "unrecognized shape" error.
+func TestReadConfigFileInlineComment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := `workspace-root = "/tmp/foo"  # my workspace
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := ReadConfigFile(dir)
+	if err != nil {
+		t.Fatalf("read with inline comment: %v", err)
+	}
+	if cfg.WorkspaceRoot != "/tmp/foo" {
+		t.Fatalf("got %+v, want /tmp/foo", cfg)
+	}
+}
+
 // TestWriteConfigFileRejectsQuote verifies the grammar guard: a value
 // containing a double-quote cannot be round-tripped and must be rejected
 // at write time.

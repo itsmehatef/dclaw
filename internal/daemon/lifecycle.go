@@ -25,10 +25,11 @@ type Lifecycle struct {
 	log    *slog.Logger
 	repo   *store.Repo
 	docker *sandbox.DockerClient
-	// policy and audit are nil in legacy tests that construct Lifecycle via
-	// NewLifecycleLegacy; the daemon always provides non-nil values via
-	// NewLifecycle. The nil guard lives in AgentCreate so tests can skip
-	// the validator entirely.
+	// policy and audit are populated by NewLifecycle. A zero-value policy
+	// (AllowRoot == "") causes AgentCreate to reject every non-trust
+	// workspace with ErrWorkspaceForbidden — the fail-closed default.
+	// A nil audit logger disables audit writes, which is intended for
+	// tests only; the daemon always wires a non-nil logger.
 	policy paths.Policy
 	audit  *audit.Logger
 }
