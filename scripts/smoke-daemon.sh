@@ -195,18 +195,24 @@ fi
 # (Test 15). Test 16 then greps that single audit.log for both outcomes.
 
 echo "--- Test 14: validator rejection on /etc ---"
+# The non-JSON renderer in renderWorkspaceForbidden emits HUMAN prose
+# ("error: workspace path forbidden by policy: ...") on stderr; the
+# machine-readable string "workspace_forbidden" only appears in the JSON
+# payload when -o json is passed. Use -o json for the code assertion.
+# /etc is on the denylist regardless of allow-root, so the global
+# DCLAW_WORKSPACE_ROOT=/tmp export does not change this rejection.
 "$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" daemon start || fail "t14-start"
 set +e
-T14_STDERR=$("$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" agent create forbidden \
-  --image=dclaw-agent:v0.1 --workspace=/etc 2>&1 >/dev/null)
+T14_OUT=$("$DCLAW_BIN" -o json --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" agent create forbidden \
+  --image=dclaw-agent:v0.1 --workspace=/etc 2>&1)
 T14_EXIT=$?
 set -e
 if [ "$T14_EXIT" -ne 65 ]; then
-  fail "Test 14 expected exit 65, got exit $T14_EXIT (stderr: $T14_STDERR)"
+  fail "Test 14 expected exit 65, got exit $T14_EXIT (output: $T14_OUT)"
 fi
-echo "$T14_STDERR" | grep -q "workspace_forbidden" \
-  || fail "Test 14 expected 'workspace_forbidden' in stderr, got: $T14_STDERR"
-pass "validator rejection on /etc (exit 65 + workspace_forbidden)"
+echo "$T14_OUT" | grep -q '"error": *"workspace_forbidden"' \
+  || fail "Test 14 expected '\"error\": \"workspace_forbidden\"' in JSON output, got: $T14_OUT"
+pass "validator rejection on /etc (exit 65 + workspace_forbidden JSON)"
 
 echo "--- Test 15: trust override via --workspace-trust ---"
 # Configure workspace-root to /tmp so the trusted path still needs trust (the
