@@ -46,6 +46,11 @@ cleanup() {
 trap cleanup EXIT
 
 export DCLAW_STATE_DIR="$SMOKE_STATE"
+# Workspace root for the new paths-hardening policy. Linux CI: /tmp is not
+# denylisted and covers every mktemp dir the smoke script creates. Operators
+# running locally on macOS should override (/tmp canonicalizes to /private/tmp
+# which IS in the default denylist).
+export DCLAW_WORKSPACE_ROOT="${DCLAW_WORKSPACE_ROOT:-/tmp}"
 
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
