@@ -288,12 +288,14 @@ trap cleanup EXIT
 pass "CAP_MKNOD dropped (mknod failed with EPERM)"
 
 echo "--- Test 18: seccomp profile — unshare(CLONE_NEWUSER) denied ---"
-# The default Docker seccomp profile denies unshare with CLONE_NEWUSER
-# for unprivileged tasks. This test exercises one concrete denied
-# syscall; a full profile regression suite lives in
-# syscall_blocklist_test.sh under follow-ups. Under pre-beta.2,
-# whether this succeeded depended on the daemon config — post-beta.2,
-# we pin seccomp=default explicitly.
+# Docker's default seccomp profile is applied automatically by the
+# daemon; this test confirms it's active (not our explicit pin — we
+# don't pin because `seccomp=default` is not a valid Docker
+# SecurityOpt token, only `unconfined` or JSON are accepted). The
+# default profile denies unshare with CLONE_NEWUSER for unprivileged
+# tasks. This test exercises one concrete denied syscall; a full
+# profile regression suite lives in syscall_blocklist_test.sh under
+# follow-ups.
 STATE_DIR_T18=$(mktemp -d -t dclaw-smoke-t18-XXXXXXXX)
 case "$STATE_DIR_T18" in
   /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;

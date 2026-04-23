@@ -181,15 +181,26 @@ func TestCreateAgentAppliesBeta2HardeningPosture(t *testing.T) {
 				t.Errorf("CapDrop literal = %v, want [ALL]", gotCapDrop)
 			}
 
-			// SecurityOpt must contain both no-new-privileges:true and
-			// seccomp=default. Use Contains-style (membership) instead of
-			// DeepEqual to stay robust if a future PR appends a third
-			// option — the posture floor is all that matters here.
+			// SecurityOpt must contain no-new-privileges:true. Use
+			// Contains-style (membership) instead of DeepEqual to stay
+			// robust if a future PR appends another option — the
+			// posture floor is all that matters here.
+			//
+			// Regression guard: `seccomp=default` must NOT appear.
+			// Docker rejects that literal token (the value after
+			// `seccomp=` is parsed as `unconfined` or JSON profile
+			// content, never a profile-name selector). Docker's
+			// built-in default seccomp profile is applied
+			// automatically by the daemon when no `seccomp=`
+			// SecurityOpt is set, so the threat-model coverage
+			// (keyctl/add_key/ptrace denial, §6.3) is unchanged.
+			// See the hotfix on top of v0.3.0-beta.2-sandbox-hardening
+			// for context.
 			if !containsString(got.SecurityOpt, "no-new-privileges:true") {
 				t.Errorf("SecurityOpt missing no-new-privileges:true; got %v", got.SecurityOpt)
 			}
-			if !containsString(got.SecurityOpt, "seccomp=default") {
-				t.Errorf("SecurityOpt missing seccomp=default; got %v", got.SecurityOpt)
+			if containsString(got.SecurityOpt, "seccomp=default") {
+				t.Errorf("SecurityOpt must not contain seccomp=default (Docker rejects it as invalid JSON); got %v", got.SecurityOpt)
 			}
 
 			// Resources.PidsLimit must be a non-nil *int64 pointing at

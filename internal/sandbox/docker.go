@@ -27,9 +27,17 @@ import (
 // Container posture constants (beta.2-sandbox-hardening). Held as
 // package-level named constants so tests can assert the exact shape
 // without string-matching the implementation.
+//
+// Docker's built-in default seccomp profile applies automatically when
+// no `seccomp=` SecurityOpt is set, so we don't explicitly pin it —
+// attempting `seccomp=default` as a literal is rejected by Docker as
+// invalid JSON (Docker parses the value after `seccomp=` as either
+// `unconfined` or JSON profile content, never a profile-name selector).
+// The daemon-loaded default therefore delivers keyctl/add_key/ptrace
+// denial (§6.3 threat model) without our intervention.
 var (
 	DefaultCapDrop     = []string{"ALL"}
-	DefaultSecurityOpt = []string{"no-new-privileges:true", "seccomp=default"}
+	DefaultSecurityOpt = []string{"no-new-privileges:true"}
 )
 
 // DefaultPidsLimit caps the number of processes an agent container can
