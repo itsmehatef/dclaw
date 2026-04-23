@@ -559,10 +559,16 @@ FAILS=0
 if mknod /tmp/dev b 8 0 2>/dev/null; then
   echo "BREACH: mknod succeeded"; FAILS=$((FAILS+1))
 fi
-# 2. setuid chmod must fail or be no-op (no-new-privileges)
-touch /tmp/x 2>/dev/null && chmod u+s /tmp/x 2>/dev/null
-if [ -u /tmp/x ]; then
-  echo "BREACH: setuid bit set despite no-new-privileges"; FAILS=$((FAILS+1))
+# 2. no-new-privileges flag must be set in the kernel.
+#    Note: chmod u+s on a file you own is a file-metadata op and is
+#    always allowed — it does NOT test no-new-privileges. The flag
+#    (PR_SET_NO_NEW_PRIVS) is a per-process kernel bit that makes
+#    future execve() IGNORE setuid/setgid bits on target binaries.
+#    The kernel exposes the flag directly at /proc/self/status; a
+#    value of 1 means no_new_privs is active for this process.
+NNP=$(grep "^NoNewPrivs:" /proc/self/status | awk "{print \$2}")
+if [ "$NNP" != "1" ]; then
+  echo "BREACH: no-new-privileges not set (NoNewPrivs=$NNP)"; FAILS=$((FAILS+1))
 fi
 # 3. unshare(CLONE_NEWUSER) must fail (seccomp default)
 if unshare -U -r id 2>/dev/null; then
