@@ -243,4 +243,128 @@ fi
 "$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" daemon stop >/dev/null 2>&1 || true
 pass "audit.log contains forbidden + trust entries (forbidden=$FORBIDDEN_COUNT trust=$TRUST_COUNT)"
 
+# ---- SANDBOX-HARDENING TESTS (Tests 17-19, beta.2) ----
+# Each test spins up its own isolated daemon in a fresh mktemp state-dir
+# and tears it down via trap — no shared state across these tests. The
+# probes below expect dclaw-agent:v0.1 on the host and a reachable
+# docker daemon; on a dev machine without docker they will fail early
+# at `agent create` and the smoke script will surface the failure
+# without reaching the posture assertion.
+
+echo "--- Test 17: capability drop — CAP_MKNOD unavailable ---"
+# Inside the container, try to create a block device. With CAP_MKNOD
+# dropped, mknod must fail with EPERM. Without caps, even uid 0 inside
+# the container cannot do this. Under pre-beta.2 posture,
+# `mknod /tmp/dev b 8 0` would succeed (exposing the host's /dev/sda
+# raw-device surface).
+STATE_DIR_T17=$(mktemp -d -t dclaw-smoke-t17-XXXXXXXX)
+case "$STATE_DIR_T17" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: STATE_DIR_T17=$STATE_DIR_T17 outside expected prefix" >&2; exit 1;;
+esac
+SOCKET_T17="$STATE_DIR_T17/dclaw.sock"
+cleanup_t17() {
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T17" --daemon-socket "$SOCKET_T17" daemon stop >/dev/null 2>&1 || true
+  docker rm -f dclaw-smoke-cap-probe >/dev/null 2>&1 || true
+  rm -rf "${STATE_DIR_T17:?refuse empty}"
+}
+trap cleanup_t17 EXIT
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T17" --daemon-socket "$SOCKET_T17" daemon start || fail "t17-start"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T17" --daemon-socket "$SOCKET_T17" agent create smoke-cap-probe \
+  --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T17" || fail "t17-create"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T17" --daemon-socket "$SOCKET_T17" agent start smoke-cap-probe || fail "t17-start-agent"
+set +e
+OUT=$("$DCLAW_BIN" --state-dir "$STATE_DIR_T17" --daemon-socket "$SOCKET_T17" agent exec smoke-cap-probe \
+  -- mknod /tmp/dev-sda b 8 0 2>&1)
+EX=$?
+set -e
+if [ "$EX" -eq 0 ]; then
+  fail "Test 17: mknod succeeded inside container; CAP_MKNOD not dropped (output: $OUT)"
+fi
+echo "$OUT" | grep -qi "operation not permitted\|eperm" \
+  || fail "Test 17: expected EPERM from mknod, got: $OUT"
+cleanup_t17
+trap cleanup EXIT
+pass "CAP_MKNOD dropped (mknod failed with EPERM)"
+
+echo "--- Test 18: seccomp profile — unshare(CLONE_NEWUSER) denied ---"
+# The default Docker seccomp profile denies unshare with CLONE_NEWUSER
+# for unprivileged tasks. This test exercises one concrete denied
+# syscall; a full profile regression suite lives in
+# syscall_blocklist_test.sh under follow-ups. Under pre-beta.2,
+# whether this succeeded depended on the daemon config — post-beta.2,
+# we pin seccomp=default explicitly.
+STATE_DIR_T18=$(mktemp -d -t dclaw-smoke-t18-XXXXXXXX)
+case "$STATE_DIR_T18" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: STATE_DIR_T18=$STATE_DIR_T18 outside expected prefix" >&2; exit 1;;
+esac
+SOCKET_T18="$STATE_DIR_T18/dclaw.sock"
+cleanup_t18() {
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T18" --daemon-socket "$SOCKET_T18" daemon stop >/dev/null 2>&1 || true
+  docker rm -f dclaw-smoke-seccomp-probe >/dev/null 2>&1 || true
+  rm -rf "${STATE_DIR_T18:?refuse empty}"
+}
+trap cleanup_t18 EXIT
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T18" --daemon-socket "$SOCKET_T18" daemon start || fail "t18-start"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T18" --daemon-socket "$SOCKET_T18" agent create smoke-seccomp-probe \
+  --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T18" || fail "t18-create"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T18" --daemon-socket "$SOCKET_T18" agent start smoke-seccomp-probe || fail "t18-start-agent"
+set +e
+OUT=$("$DCLAW_BIN" --state-dir "$STATE_DIR_T18" --daemon-socket "$SOCKET_T18" agent exec smoke-seccomp-probe \
+  -- unshare -U -r whoami 2>&1)
+EX=$?
+set -e
+if [ "$EX" -eq 0 ]; then
+  fail "Test 18: unshare -U succeeded; seccomp default not applied (output: $OUT)"
+fi
+echo "$OUT" | grep -qi "operation not permitted\|eperm" \
+  || fail "Test 18: expected EPERM from unshare, got: $OUT"
+cleanup_t18
+trap cleanup EXIT
+pass "seccomp default profile applied (unshare(CLONE_NEWUSER) denied)"
+
+echo "--- Test 19: PidsLimit — fork bomb capped at 256 ---"
+# Spawn 300 sleeping processes. With PidsLimit=256, the 257th fork
+# fails. We assert the count is bounded below 300 (not that we hit
+# exactly 256 — the kernel counts pid-1 and the shell itself). If
+# PidsLimit is absent, every fork succeeds and jobs returns 300.
+STATE_DIR_T19=$(mktemp -d -t dclaw-smoke-t19-XXXXXXXX)
+case "$STATE_DIR_T19" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: STATE_DIR_T19=$STATE_DIR_T19 outside expected prefix" >&2; exit 1;;
+esac
+SOCKET_T19="$STATE_DIR_T19/dclaw.sock"
+cleanup_t19() {
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T19" --daemon-socket "$SOCKET_T19" daemon stop >/dev/null 2>&1 || true
+  docker rm -f dclaw-smoke-pids-probe >/dev/null 2>&1 || true
+  rm -rf "${STATE_DIR_T19:?refuse empty}"
+}
+trap cleanup_t19 EXIT
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T19" --daemon-socket "$SOCKET_T19" daemon start || fail "t19-start"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T19" --daemon-socket "$SOCKET_T19" agent create smoke-pids-probe \
+  --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T19" || fail "t19-create"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T19" --daemon-socket "$SOCKET_T19" agent start smoke-pids-probe || fail "t19-start-agent"
+set +e
+OUT=$("$DCLAW_BIN" --state-dir "$STATE_DIR_T19" --daemon-socket "$SOCKET_T19" agent exec smoke-pids-probe \
+  -- sh -c 'i=0; while [ "$i" -lt 300 ]; do (sleep 30) & i=$((i+1)); done; jobs | wc -l' 2>&1)
+EX=$?
+set -e
+JOB_COUNT=$(echo "$OUT" | tail -n1 | tr -d '[:space:]')
+# The spawn loop is expected to hit EAGAIN partway through, producing
+# non-zero exit status from the sub-shell; accept any result where the
+# observed job count is bounded below 300. If PidsLimit is missing, we
+# will see 300 (every fork succeeded) and fail.
+case "$JOB_COUNT" in
+  ''|*[!0-9]*)
+    fail "Test 19: could not parse job count from output: $OUT"
+    ;;
+esac
+if [ "$JOB_COUNT" -ge 300 ]; then
+  fail "Test 19: PidsLimit not enforced; spawned $JOB_COUNT processes (output: $OUT)"
+fi
+cleanup_t19
+trap cleanup EXIT
+pass "PidsLimit enforced (spawned $JOB_COUNT < 300 processes before EAGAIN)"
+
 echo "All daemon smoke tests passed."

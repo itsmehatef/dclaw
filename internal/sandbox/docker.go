@@ -18,18 +18,65 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
+
+// Container posture constants (beta.2-sandbox-hardening). Held as
+// package-level named constants so tests can assert the exact shape
+// without string-matching the implementation.
+var (
+	DefaultCapDrop     = []string{"ALL"}
+	DefaultSecurityOpt = []string{"no-new-privileges:true", "seccomp=default"}
+)
+
+// DefaultPidsLimit caps the number of processes an agent container can
+// fork. pi-mono's steady-state process count is ~5; 256 leaves ~50×
+// headroom while bounding a fork-bomb / PID-DoS primitive.
+const DefaultPidsLimit int64 = 256
+
+// pidsLimitPtr lifts an int64 into a *int64 — the Docker SDK's
+// container.Resources.PidsLimit field is a pointer so absent/zero
+// semantics differ from "set to N".
+func pidsLimitPtr(n int64) *int64 { return &n }
+
+// dockerAPI is the minimal subset of the docker SDK's *client.Client
+// surface that DockerClient actually calls. Declaring it here lets
+// tests inject a recording fake via DockerClient.cli without touching
+// a live Docker daemon. The real *client.Client satisfies this
+// interface trivially because every method below has the same
+// signature on the SDK type.
+type dockerAPI interface {
+	ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error)
+	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
+	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
+	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+	ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error)
+	ContainerLogs(ctx context.Context, container string, options container.LogsOptions) (io.ReadCloser, error)
+	ContainerExecCreate(ctx context.Context, container string, config types.ExecConfig) (types.IDResponse, error)
+	ContainerExecAttach(ctx context.Context, execID string, config types.ExecStartCheck) (types.HijackedResponse, error)
+	ContainerExecInspect(ctx context.Context, execID string) (types.ContainerExecInspect, error)
+	Close() error
+}
+
+// Compile-time proof the real SDK client satisfies dockerAPI. If the
+// docker SDK ever changes a signature, this line fails to build in
+// lockstep with every call site — the canary we want.
+var _ dockerAPI = (*client.Client)(nil)
 
 // ErrDockerFailure is the sentinel for any error arising from a Docker
 // API call. Wrapped with fmt.Errorf("%w: %v", ErrDockerFailure, err) so
 // callers can dispatch via errors.Is without string matching.
 var ErrDockerFailure = errors.New("docker operation failed")
 
-// DockerClient is a thin wrapper around the docker SDK's client.Client.
+// DockerClient is a thin wrapper around the docker SDK. The cli field
+// holds a dockerAPI interface (not *client.Client directly) so tests
+// can inject a recording fake; production still supplies the real
+// *client.Client via NewDockerClient.
 type DockerClient struct {
-	cli *client.Client
+	cli dockerAPI
 }
 
 // DockerExecClient is the subset of DockerClient methods needed by ChatHandler.
@@ -126,6 +173,11 @@ func (d *DockerClient) CreateAgent(ctx context.Context, spec CreateSpec) (string
 	hostCfg := &container.HostConfig{
 		Mounts:        mounts,
 		RestartPolicy: container.RestartPolicy{Name: "no"},
+		CapDrop:       DefaultCapDrop,
+		SecurityOpt:   DefaultSecurityOpt,
+		Resources: container.Resources{
+			PidsLimit: pidsLimitPtr(DefaultPidsLimit),
+		},
 	}
 
 	resp, err := d.cli.ContainerCreate(ctx, cfg, hostCfg, nil, nil, spec.Name)
