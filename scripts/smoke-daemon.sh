@@ -367,4 +367,69 @@ cleanup_t19
 trap cleanup EXIT
 pass "PidsLimit enforced (spawned $JOB_COUNT < 300 processes before EAGAIN)"
 
+echo "--- Test 20: ReadonlyRootfs — /etc + /opt not writable; /tmp + /workspace writable ---"
+# Four probes in one test exercise the ReadonlyRootfs + Tmpfs posture:
+#   (a) touch /etc/sandbox-breach  → must fail with EROFS
+#   (b) touch /opt/sandbox-breach  → must fail with EROFS
+#   (c) touch /tmp/ok              → must succeed (tmpfs overlay)
+#   (d) touch /workspace/ok        → must succeed (bind-mount)
+# Under pre-beta.2 posture all four writes would succeed, allowing an
+# attacker to persist a malicious entry-point (e.g. overwriting /app/run.mjs).
+# Post-beta.2, the rootfs is read-only except for the tmpfs overlays and
+# the workspace bind-mount carved out at container-create time.
+STATE_DIR_T20=$(mktemp -d -t dclaw-smoke-t20-XXXXXXXX)
+case "$STATE_DIR_T20" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: STATE_DIR_T20=$STATE_DIR_T20 outside expected prefix" >&2; exit 1;;
+esac
+SOCKET_T20="$STATE_DIR_T20/dclaw.sock"
+cleanup_t20() {
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T20" --daemon-socket "$SOCKET_T20" daemon stop >/dev/null 2>&1 || true
+  docker rm -f dclaw-smoke-rootfs-probe >/dev/null 2>&1 || true
+  rm -rf "${STATE_DIR_T20:?refuse empty}"
+}
+trap cleanup_t20 EXIT
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T20" --daemon-socket "$SOCKET_T20" daemon start || fail "t20-start"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T20" --daemon-socket "$SOCKET_T20" agent create smoke-rootfs-probe \
+  --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T20" || fail "t20-create"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T20" --daemon-socket "$SOCKET_T20" agent start smoke-rootfs-probe || fail "t20-start-agent"
+
+# Negative probe (a): /etc write must fail with EROFS
+set +e
+OUT=$("$DCLAW_BIN" --state-dir "$STATE_DIR_T20" --daemon-socket "$SOCKET_T20" agent exec smoke-rootfs-probe \
+  -- touch /etc/sandbox-breach 2>&1)
+EX=$?
+set -e
+if [ "$EX" -eq 0 ]; then
+  fail "Test 20 /etc: ReadonlyRootfs not applied; /etc is writable (output: $OUT)"
+fi
+echo "$OUT" | grep -qi "read-only\|erofs" \
+  || fail "Test 20 /etc: expected EROFS, got: $OUT"
+
+# Negative probe (b): /opt write must fail with EROFS
+set +e
+OUT=$("$DCLAW_BIN" --state-dir "$STATE_DIR_T20" --daemon-socket "$SOCKET_T20" agent exec smoke-rootfs-probe \
+  -- touch /opt/sandbox-breach 2>&1)
+EX=$?
+set -e
+if [ "$EX" -eq 0 ]; then
+  fail "Test 20 /opt: ReadonlyRootfs not applied; /opt is writable (output: $OUT)"
+fi
+echo "$OUT" | grep -qi "read-only\|erofs" \
+  || fail "Test 20 /opt: expected EROFS, got: $OUT"
+
+# Positive probe (c): /tmp write must succeed (tmpfs overlay)
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T20" --daemon-socket "$SOCKET_T20" agent exec smoke-rootfs-probe \
+  -- touch /tmp/ok \
+  || fail "Test 20 /tmp: tmpfs overlay missing; /tmp not writable"
+
+# Positive probe (d): /workspace write must succeed (bind-mount)
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T20" --daemon-socket "$SOCKET_T20" agent exec smoke-rootfs-probe \
+  -- touch /workspace/ok \
+  || fail "Test 20 /workspace: bind-mount missing; /workspace not writable"
+
+cleanup_t20
+trap cleanup EXIT
+pass "ReadonlyRootfs enforced (/etc, /opt non-writable); /tmp + /workspace writable"
+
 echo "All daemon smoke tests passed."

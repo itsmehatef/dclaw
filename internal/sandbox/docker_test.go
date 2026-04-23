@@ -4,21 +4,23 @@
 // recording captureClient into DockerClient.cli via the package-internal
 // dockerAPI interface, call CreateAgent, and assert the captured Config +
 // HostConfig carry the beta.2-sandbox-hardening posture fields (CapDrop,
-// SecurityOpt, Resources.PidsLimit). The test is scoped tightly: no
-// assertions on unrelated fields — a future PR (PR-B / PR-C) will extend
-// the table as new posture fields ship.
+// SecurityOpt, Resources.PidsLimit, ReadonlyRootfs, Tmpfs). The test is
+// scoped tightly: no assertions on unrelated fields — a future PR
+// (PR-C / PR-D) will extend the table as new posture fields ship.
 //
 // Design note: the assertions reference the same package-level constants
-// (DefaultCapDrop, DefaultSecurityOpt, DefaultPidsLimit) that the
-// implementation uses, so a regression that renames or reshapes those
-// constants trips the compilation, not a string-match mismatch. This is
-// deliberate — we want the posture shape pinned at one source of truth.
+// (DefaultCapDrop, DefaultSecurityOpt, DefaultPidsLimit, DefaultTmpfs)
+// that the implementation uses, so a regression that renames or reshapes
+// those constants trips the compilation, not a string-match mismatch.
+// This is deliberate — we want the posture shape pinned at one source
+// of truth.
 package sandbox
 
 import (
 	"context"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/docker/docker/api/types"
@@ -183,6 +185,46 @@ func TestCreateAgentAppliesBeta2HardeningPosture(t *testing.T) {
 			}
 			if *got.Resources.PidsLimit != int64(256) {
 				t.Errorf("*Resources.PidsLimit literal = %d, want 256", *got.Resources.PidsLimit)
+			}
+
+			// ReadonlyRootfs must be true so /etc, /usr, /opt, /app all
+			// become immutable from inside the container. Combined with
+			// the Tmpfs overlays below this mirrors the posture assertion
+			// in docs/phase-3-beta2-sandbox-hardening-plan.md §4.2.
+			if got.ReadonlyRootfs != true {
+				t.Errorf("ReadonlyRootfs = %v, want true", got.ReadonlyRootfs)
+			}
+
+			// Tmpfs must carry exactly the two entries DefaultTmpfs
+			// declares: /tmp sized 64m, /run sized 8m, both
+			// rw,noexec,nosuid,nodev. Exact-equal on the map catches
+			// any accidental divergence from the package constant;
+			// the per-entry checks below document the load-bearing
+			// options in case the Docker SDK string-formats them
+			// differently in a future version.
+			if got.Tmpfs == nil {
+				t.Fatalf("Tmpfs is nil; want map with /tmp and /run entries")
+			}
+			if !reflect.DeepEqual(got.Tmpfs, DefaultTmpfs) {
+				t.Errorf("Tmpfs = %v, want %v", got.Tmpfs, DefaultTmpfs)
+			}
+			if got.Tmpfs["/tmp"] != "rw,noexec,nosuid,nodev,size=64m" {
+				t.Errorf(`Tmpfs["/tmp"] = %q, want "rw,noexec,nosuid,nodev,size=64m"`, got.Tmpfs["/tmp"])
+			}
+			if got.Tmpfs["/run"] != "rw,noexec,nosuid,nodev,size=8m" {
+				t.Errorf(`Tmpfs["/run"] = %q, want "rw,noexec,nosuid,nodev,size=8m"`, got.Tmpfs["/run"])
+			}
+			// Substring checks: robust against Docker SDK reordering
+			// the mount-option tokens in a future release. If the
+			// exact-equal above starts failing but these still pass,
+			// the semantic posture is preserved.
+			for _, path := range []string{"/tmp", "/run"} {
+				opts := got.Tmpfs[path]
+				for _, want := range []string{"noexec", "nosuid", "nodev"} {
+					if !strings.Contains(opts, want) {
+						t.Errorf("Tmpfs[%q]=%q missing option %q", path, opts, want)
+					}
+				}
 			}
 		})
 	}

@@ -37,6 +37,32 @@ var (
 // headroom while bounding a fork-bomb / PID-DoS primitive.
 const DefaultPidsLimit int64 = 256
 
+// DefaultTmpfs is the tmpfs mount table applied to every agent container
+// alongside ReadonlyRootfs. The rootfs is read-only post-beta.2, so we
+// explicitly carve out the two paths pi-mono writes at runtime:
+//
+//   - /tmp  — pi-mono scratch space (shell history, working JSON files).
+//     Sized 64 MiB; observed pi-mono /tmp usage is < 10 MiB.
+//   - /run  — tini runtime sockets and lock files. Sized 8 MiB.
+//
+// Both mounts are rw + noexec,nosuid,nodev. Because the rootfs is
+// read-only, anything dropped in these tmpfses must not be executable
+// — an attacker who smuggles a payload into /tmp should not be able
+// to chmod+x it into a runnable shellcode stager.
+//
+// pi-mono write-path audit (agent/run.mjs + agent/Dockerfile, v0.1):
+//   - /workspace/*          bind-mount, writable unconditionally.
+//   - /tmp/*                covered by this tmpfs.
+//   - /root/.pi/agent/*     suppressed by --no-session in agent/run.mjs:29.
+//   - /app/node_modules/.cache/*  build-time only (npm ci), not runtime.
+//   - /etc/resolv.conf, /etc/hosts  Docker-managed; auto-preserved.
+//
+// No additional tmpfs overlays are required for the v0.1 agent image.
+var DefaultTmpfs = map[string]string{
+	"/tmp": "rw,noexec,nosuid,nodev,size=64m",
+	"/run": "rw,noexec,nosuid,nodev,size=8m",
+}
+
 // pidsLimitPtr lifts an int64 into a *int64 — the Docker SDK's
 // container.Resources.PidsLimit field is a pointer so absent/zero
 // semantics differ from "set to N".
@@ -171,10 +197,12 @@ func (d *DockerClient) CreateAgent(ctx context.Context, spec CreateSpec) (string
 		Tty:    false,
 	}
 	hostCfg := &container.HostConfig{
-		Mounts:        mounts,
-		RestartPolicy: container.RestartPolicy{Name: "no"},
-		CapDrop:       DefaultCapDrop,
-		SecurityOpt:   DefaultSecurityOpt,
+		Mounts:         mounts,
+		RestartPolicy:  container.RestartPolicy{Name: "no"},
+		CapDrop:        DefaultCapDrop,
+		SecurityOpt:    DefaultSecurityOpt,
+		ReadonlyRootfs: true,
+		Tmpfs:          DefaultTmpfs,
 		Resources: container.Resources{
 			PidsLimit: pidsLimitPtr(DefaultPidsLimit),
 		},
