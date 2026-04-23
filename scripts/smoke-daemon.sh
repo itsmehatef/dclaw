@@ -394,6 +394,10 @@ case "$STATE_DIR_T20" in
   /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
   *) echo "refuse: STATE_DIR_T20=$STATE_DIR_T20 outside expected prefix" >&2; exit 1;;
 esac
+# Workspace must be writable by the container's uid 1000 (post-PR-C).
+# Host-side mktemp dir is owned by the runner user; chmod 0777 gives
+# uid 1000 the write bit needed for Test 20's /workspace probe.
+chmod 0777 "$STATE_DIR_T20"
 SOCKET_T20="$STATE_DIR_T20/dclaw.sock"
 cleanup_t20() {
   "$DCLAW_BIN" --state-dir "$STATE_DIR_T20" --daemon-socket "$SOCKET_T20" daemon stop >/dev/null 2>&1 || true
