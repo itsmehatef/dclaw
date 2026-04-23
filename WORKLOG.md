@@ -193,3 +193,86 @@ Tag push triggered `docker-smoke` CI (only runs on `v*` tags). First actual end-
 - Latest green tag: `v0.3.0-beta.1-paths-hardening.2`.
 - CI: build green, docker-smoke green (tag-triggered).
 - Outstanding: follow-up GitHub issues (beta.2 sandbox hardening, easier setup for workspace-root, full TOML config, XDG split, Windows denylist, audit-log rotation, `dclaw doctor workspace`, Test 15 macOS workspace-root issue, polish umbrella) — Hatef to decide whether/how to file.
+
+---
+
+## 2026-04-23 — beta.2-sandbox-hardening build cycle
+
+**Plan and conventions locked in.** Hatef approved the backlog as individual patch releases under a beta.2 umbrella: `v0.3.0-beta.2` = sandbox hardening (full phase), then `beta.2.1`..`.N` for follow-up patches with natural bundling where theme warrants. Two new conventions saved to Atlas memory: (1) every dclaw release runs a doc-review agent before tag push, (2) `v0.3.0-beta.X` for phases / `v0.3.0-beta.X.Y` for patches.
+
+**Kickoff:** architect wrote `docs/phase-3-beta2-sandbox-hardening-plan.md` (~1000 lines, mirrors beta.1 plan's 14-section shape). Doc-review baseline sweep found 2 BLOCKERS + 6 IMPORTANTs + 3 MINORs. Shipped the 2 BLOCKERS + plan-DRAFT-flip as `v0.3.0-beta.1-paths-hardening.3` (commit `30886a0`) — docs-only patch before beta.2 build started.
+
+### Shipped on `main` — beta.2 PR series
+
+```
+d08ccad docs: pre-tag sweep — flip beta.2 plan to SHIPPED + README + agent + CI Go pin
+827896c beta.2(D): docker.sock denylist + full posture probe + legacyScan warning
+2c35a7a beta.2(C): non-root UID enforcement (1000:1000) + run.mjs uid-0 guard
+a137e05 beta.2(B): ReadonlyRootfs + tmpfs overlays
+6ce2bb5 beta.2(A): cap drop + no-new-privileges + seccomp + PidsLimit + posture harness
+```
+
+Total: ~+1200 lines of code + tests across 4 PRs + ~+90 lines doc sweep. Main-push build CI green at every commit (21-30s per run). Zero new `go.mod` deps; zero migrations; zero wire-protocol changes.
+
+### PR-A — `6ce2bb5` (3 files, +379/-2)
+- `DefaultCapDrop = ["ALL"]`, `DefaultSecurityOpt = ["no-new-privileges:true", "seccomp=default"]`, `DefaultPidsLimit = 256` as package-level constants in `internal/sandbox/docker.go`. Posture shape asserted by `TestCreateAgentAppliesBeta2HardeningPosture`.
+- `dockerAPI` interface refactor — `DockerClient.cli` now an interface covering the 11 `ContainerCreate/Start/Stop/Remove/Inspect/Logs/ExecCreate/ExecAttach/ExecInspect/Close` methods. Compile-time assertion `var _ dockerAPI = (*client.Client)(nil)` guards against SDK drift. Test injects a recording `captureClient` fake.
+- Smoke Tests 17/18/19: CAP_MKNOD drop (`mknod → EPERM`), seccomp default (`unshare -U -r → EPERM`), PidsLimit (300-fork loop bounded).
+
+### PR-B — `a137e05` (3 files, +146/-11)
+- `HostConfig.ReadonlyRootfs: true` + `HostConfig.Tmpfs: {/tmp: 64m, /run: 8m}`, both `rw,noexec,nosuid,nodev`.
+- pi-mono write-path audit executed before flipping the flag: `/workspace/*` (bind), `/tmp/*` (tmpfs), `/run/*` (tmpfs), `/root/.pi/agent/*` (suppressed via `--no-session` per `agent/run.mjs:29`), `/app/node_modules/.cache/*` (build-time only). No additional tmpfs entries needed for `dclaw-agent:v0.1`.
+- Smoke Test 20: `touch /etc/...` + `touch /opt/...` → EROFS; `touch /tmp/ok` + `touch /workspace/ok` → success.
+
+### PR-C — `2c35a7a` (5 files, +70/-0)
+- `DefaultContainerUser = "1000:1000"` constant; applied via `container.Config.User` (SDK v26 places `User` on Config, not HostConfig).
+- `agent/run.mjs` uid-0 guard (4 lines): `if (process.getuid() === 0) { process.exit(70); }` — third line of defense behind image USER directive + daemon-side `container.Config.User`.
+- `agent/Dockerfile` invariant comment documenting the uid-1000 contract.
+- Smoke Test 21: `id -u` + `id -g` both assert `1000`.
+
+### PR-D — `827896c` (6 files, +351/-22)
+- Three explicit docker.sock denylist entries in `internal/paths/policy.go:DefaultDenylist`: `/var/run/docker.sock`, `/run/docker.sock`, plus Docker Desktop macOS variant via substring match on `/Library/Containers/com.docker.docker/` AND `docker-raw.sock` suffix (~10 lines avoid a glob-lib dep). Reordered DefaultDenylist so docker.sock entries land before `/var` — cleaner error reason than `/var` descendant match.
+- 4 new validator test rows (33-36); rows 33/34/36 skip on hosts without `docker.sock`, row 35 runs unconditionally via a fake tree under `t.TempDir`.
+- `docs/workspace-root.md`: new H3 "Docker socket" subsection + "Custom image compatibility" (3 rules for operators shipping their own `--image=`).
+- `cmd/dclawd/main.go:legacyScan` extension: on startup, inspect each existing agent's container via new `DockerClient.InspectPosture` method (kept dockerAPI types package-private — sandbox remains single source of truth for SDK shapes); warn per agent with pre-beta.2 weak posture. Advisory only.
+- Smoke Tests 22 + 23: docker.sock rejection via `-o json` + grep, full 6-probe posture test.
+
+### Pre-tag docs sweep — `d08ccad` (4 files, +845/-14)
+
+Second doc-review pass before tagging found 3 BLOCKERS + 2 IMPORTANTs:
+1. beta.2 plan §0 Status DRAFT → SHIPPED with 4-commit table (plan doc was untracked pre-sweep; landed as committed file in this commit alongside the §0 flip).
+2. `README.md:105` — "beta.2 sandbox-hardening next" line → "container posture hardened" (false the moment the tag lands).
+3. `README.md:46,59` — version header + code-fence example → `v0.3.0-beta.2-sandbox-hardening`.
+4. `agent/README.md` "Known limitations (v0.1)" → rewritten to reflect current scope (multi-turn + streaming shipped alpha.3; beta.2 posture now daemon-enforced).
+5. `.github/workflows/build.yml` both jobs: `go-version: '1.22'` → `'1.25'`. CI was working (setup-go auto-upgrades to go.mod's 1.25.0) but the declared version lied.
+
+3 MINORs deferred to beta.2.1 or later: README CI badge, `docs/workspace-root.md` title scope, "in beta.1" phrasing on audit-log rotation/retention notes.
+
+### Threat model closed
+
+All 9 escape-vector categories the independent code reviewer flagged post-beta.1 are addressed:
+- **mknod + raw block device** — `CAP_MKNOD` dropped (PR-A). `mknod → EPERM`.
+- **ptrace injection** — seccomp default + `no-new-privileges` (PR-A).
+- **keyctl / add_key / request_key** — seccomp default explicit pin (PR-A).
+- **setuid/setgid escalation** — `no-new-privileges` + `ReadonlyRootfs` + uid 1000 (PR-A + B + C). Mitigates CVE-2019-5736, CVE-2022-0185.
+- **fork-bomb / PID DoS** — `PidsLimit: 256` (PR-A).
+- **rootfs tampering** — `ReadonlyRootfs: true` with tmpfs overlays (PR-B).
+- **docker.sock as Trojan workspace** — explicit denylist (PR-D).
+- **host PID/network/IPC namespace sharing** — dclaw does not expose privileged flags; unchanged.
+- **kernel-level exploits (Dirty Pipe, Dirty Cred)** — out of dclaw's reach; operator keeps host kernel patched. Documented in `docs/workspace-root.md`.
+
+### Follow-ups still filed (per versioning plan)
+
+- `beta.2.1` — smoke hygiene bundle: Test 15 macOS workspace fix (#2) + review polish umbrella (#9).
+- `beta.2.2` — easier setup for workspace-root (#3, `dclaw init` wizard).
+- `beta.2.3` — audit log rotation (#7).
+- `beta.2.4` — `dclaw doctor` subcommand (#8).
+- `beta.2.5` — TOML config refactor (#4).
+- `beta.2.6` — platform-port bundle: XDG split (#5) + Windows denylist (#6).
+
+### Final state
+
+- Main tip (pre-tag): `d08ccad`.
+- About to tag: `v0.3.0-beta.2-sandbox-hardening`.
+- CI: build green on every beta.2 commit (main-push); docker-smoke pending on the tag push.
+- Next: orchestrator tags + pushes tag; then reports docker-smoke outcome.
