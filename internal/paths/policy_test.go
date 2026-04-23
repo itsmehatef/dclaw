@@ -471,6 +471,91 @@ func TestPolicyValidate(t *testing.T) {
 			wantErr:     false,
 			wantCanonEQ: trailCanon,
 		},
+		// 33. /var/run/docker.sock rejected (beta.2 PR-D). The literal
+		// entry appears in DefaultDenylist BEFORE /var so the exact-match
+		// branch of the validator fires and the error names the socket
+		// entry explicitly rather than the broader /var descendant match.
+		// Skipped on machines without a docker.sock (EvalSymlinks errors
+		// before the denylist check runs) — same pattern as row 12/13/14.
+		{
+			name: "33-docker-sock-var-run",
+			runSetup: func(t *testing.T) (string, string, []string, bool, string) {
+				return allowRoot, "/var/run/docker.sock", fullDenylist, false, ""
+			},
+			wantErr:    true,
+			wantSubstr: "docker",
+			skipIf: func(t *testing.T) bool {
+				_, err := os.Stat("/var/run/docker.sock")
+				return err != nil
+			},
+		},
+		// 34. /run/docker.sock rejected (systemd-managed Linux variant).
+		// Literal denylist entry; same exact-match-before-descendant
+		// ordering concern as row 33.
+		{
+			name: "34-docker-sock-run",
+			runSetup: func(t *testing.T) (string, string, []string, bool, string) {
+				return allowRoot, "/run/docker.sock", fullDenylist, false, ""
+			},
+			wantErr:    true,
+			wantSubstr: "docker",
+			skipIf: func(t *testing.T) bool {
+				_, err := os.Stat("/run/docker.sock")
+				return err != nil
+			},
+		},
+		// 35. Docker Desktop macOS socket rejected via the substring-match
+		// helper (isDockerDesktopSocket). The per-user path component
+		// rules out a literal denylist entry, so we assert the helper
+		// fires by constructing a path whose canonical resolution lives
+		// under /Library/Containers/com.docker.docker/ and ends in
+		// docker-raw.sock. Since the actual socket is runtime-created
+		// by Docker Desktop, this row stages a fake directory tree under
+		// tmpRoot and symlinks it into the expected shape — no live
+		// docker.sock required.
+		{
+			name: "35-docker-sock-desktop-macos",
+			runSetup: func(t *testing.T) (string, string, []string, bool, string) {
+				// Build:
+				//   tmpRoot/fake-user/Library/Containers/com.docker.docker/Data/docker-raw.sock
+				// as an empty regular file so EvalSymlinks succeeds.
+				bundle := filepath.Join(tmpRoot, "fake-user", "Library", "Containers", "com.docker.docker", "Data")
+				if err := os.MkdirAll(bundle, 0o755); err != nil {
+					t.Fatalf("mkdir bundle: %v", err)
+				}
+				sock := filepath.Join(bundle, "docker-raw.sock")
+				if err := os.WriteFile(sock, nil, 0o600); err != nil {
+					t.Fatalf("write fake sock: %v", err)
+				}
+				return allowRoot, sock, macOSDenylist, false, ""
+			},
+			wantErr:    true,
+			wantSubstr: "Docker Desktop control socket",
+			skipIf: func(t *testing.T) bool {
+				// The suffix match is case-insensitive and the tree we
+				// build has nothing Darwin-specific — runs on any OS
+				// where filepath.EvalSymlinks accepts a regular file
+				// (all of darwin/linux).
+				return false
+			},
+		},
+		// 36. Trailing-slash variant canonicalizes to the same path and
+		// must hit the same denylist rejection as row 33. This guards
+		// against a naive string-compare implementation that treated
+		// "/var/run/docker.sock/" as distinct from "/var/run/docker.sock".
+		// Clean() strips the trailing slash before EvalSymlinks + denylist.
+		{
+			name: "36-docker-sock-trailing-slash",
+			runSetup: func(t *testing.T) (string, string, []string, bool, string) {
+				return allowRoot, "/var/run/docker.sock/", fullDenylist, false, ""
+			},
+			wantErr:    true,
+			wantSubstr: "docker",
+			skipIf: func(t *testing.T) bool {
+				_, err := os.Stat("/var/run/docker.sock")
+				return err != nil
+			},
+		},
 	}
 
 	for _, tc := range cases {

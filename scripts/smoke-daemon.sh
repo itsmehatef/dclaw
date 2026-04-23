@@ -470,4 +470,115 @@ cleanup_t21
 trap cleanup EXIT
 pass "non-root UID enforced (uid=1000 gid=1000 inside container)"
 
+echo "--- Test 22: docker.sock rejected as --workspace ---"
+# beta.2 PR-D explicit denylist: binding the Docker control socket
+# into an agent container is equivalent to granting root on the host
+# (the agent could start privileged containers, mount any host path,
+# or drive the Docker daemon directly). The validator rejects all
+# three common locations pre-mount with a clearer error than the
+# pre-beta.2 "under /var descendant denylist" match. This test
+# exercises the Linux canonical /var/run/docker.sock path; the
+# Docker Desktop macOS substring match has unit coverage in
+# internal/paths/policy_test.go row 35.
+STATE_DIR_T22=$(mktemp -d -t dclaw-smoke-t22-XXXXXXXX)
+case "$STATE_DIR_T22" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: STATE_DIR_T22=$STATE_DIR_T22 outside expected prefix" >&2; exit 1;;
+esac
+SOCKET_T22="$STATE_DIR_T22/dclaw.sock"
+cleanup_t22() {
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T22" --daemon-socket "$SOCKET_T22" daemon stop >/dev/null 2>&1 || true
+  docker rm -f dclaw-evil-sock >/dev/null 2>&1 || true
+  rm -rf "${STATE_DIR_T22:?refuse empty}"
+}
+trap cleanup_t22 EXIT
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T22" --daemon-socket "$SOCKET_T22" daemon start || fail "t22-start"
+# Use -o json for the machine-readable assertion per Test 14 precedent.
+set +e
+T22_OUT=$("$DCLAW_BIN" -o json --state-dir "$STATE_DIR_T22" --daemon-socket "$SOCKET_T22" agent create evil-sock \
+  --image=dclaw-agent:v0.1 --workspace=/var/run/docker.sock 2>&1)
+T22_EXIT=$?
+set -e
+if [ "$T22_EXIT" -ne 65 ]; then
+  fail "Test 22 expected exit 65, got exit $T22_EXIT (output: $T22_OUT)"
+fi
+echo "$T22_OUT" | grep -q '"error": *"workspace_forbidden"' \
+  || fail "Test 22 expected '\"error\": \"workspace_forbidden\"' JSON, got: $T22_OUT"
+# Confirm the reason mentions docker or socket specifically — differentiates
+# the docker.sock rejection from a generic /var descendant match.
+echo "$T22_OUT" | grep -qi "docker\|socket" \
+  || fail "Test 22 expected reason to mention docker/socket, got: $T22_OUT"
+cleanup_t22
+trap cleanup EXIT
+pass "docker.sock rejected as --workspace (exit 65 + workspace_forbidden)"
+
+echo "--- Test 23: full beta.2 posture probe ---"
+# One agent, six probes in a single exec script. Each probe MUST fail
+# (or report the expected safe value). Any probe success increments
+# FAILS; the script exits with FAILS as the status code so the smoke
+# harness can print all failures together instead of bailing on the
+# first. Under pre-beta.2 posture most of these probes would succeed,
+# demonstrating why every dimension (caps, seccomp, readonlyrootfs,
+# uid, pids-limit) matters as a layer of defense.
+STATE_DIR_T23=$(mktemp -d -t dclaw-smoke-t23-XXXXXXXX)
+case "$STATE_DIR_T23" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: STATE_DIR_T23=$STATE_DIR_T23 outside expected prefix" >&2; exit 1;;
+esac
+SOCKET_T23="$STATE_DIR_T23/dclaw.sock"
+cleanup_t23() {
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T23" --daemon-socket "$SOCKET_T23" daemon stop >/dev/null 2>&1 || true
+  docker rm -f dclaw-smoke-posture >/dev/null 2>&1 || true
+  rm -rf "${STATE_DIR_T23:?refuse empty}"
+}
+trap cleanup_t23 EXIT
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T23" --daemon-socket "$SOCKET_T23" daemon start || fail "t23-start"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T23" --daemon-socket "$SOCKET_T23" agent create smoke-posture \
+  --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T23" || fail "t23-create"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T23" --daemon-socket "$SOCKET_T23" agent start smoke-posture || fail "t23-agent-start"
+
+POSTURE_SCRIPT='
+FAILS=0
+# 1. mknod must fail (CAP_MKNOD dropped)
+if mknod /tmp/dev b 8 0 2>/dev/null; then
+  echo "BREACH: mknod succeeded"; FAILS=$((FAILS+1))
+fi
+# 2. setuid chmod must fail or be no-op (no-new-privileges)
+touch /tmp/x 2>/dev/null && chmod u+s /tmp/x 2>/dev/null
+if [ -u /tmp/x ]; then
+  echo "BREACH: setuid bit set despite no-new-privileges"; FAILS=$((FAILS+1))
+fi
+# 3. unshare(CLONE_NEWUSER) must fail (seccomp default)
+if unshare -U -r id 2>/dev/null; then
+  echo "BREACH: unshare(CLONE_NEWUSER) succeeded"; FAILS=$((FAILS+1))
+fi
+# 4. rootfs write to /etc must fail (ReadonlyRootfs)
+if touch /etc/breach 2>/dev/null; then
+  echo "BREACH: /etc writable"; FAILS=$((FAILS+1))
+fi
+# 5. uid must be 1000
+UID_SELF=$(id -u)
+if [ "$UID_SELF" != "1000" ]; then
+  echo "BREACH: uid=$UID_SELF (expected 1000)"; FAILS=$((FAILS+1))
+fi
+# 6. PidsLimit — spawn up to 300 and confirm we hit the cap before 300
+i=0
+while [ "$i" -lt 300 ]; do (sleep 10 &) 2>/dev/null || break; i=$((i+1)); done
+if [ "$i" -ge 300 ]; then
+  echo "BREACH: spawned $i processes (no PidsLimit)"; FAILS=$((FAILS+1))
+fi
+exit $FAILS
+'
+set +e
+T23_OUT=$("$DCLAW_BIN" --state-dir "$STATE_DIR_T23" --daemon-socket "$SOCKET_T23" agent exec smoke-posture -- sh -c "$POSTURE_SCRIPT" 2>&1)
+T23_EXIT=$?
+set -e
+if [ "$T23_EXIT" -ne 0 ]; then
+  fail "Test 23: $T23_EXIT posture probe(s) breached; output:
+$T23_OUT"
+fi
+cleanup_t23
+trap cleanup EXIT
+pass "full beta.2 posture probe (all 6 dimensions enforced)"
+
 echo "All daemon smoke tests passed."

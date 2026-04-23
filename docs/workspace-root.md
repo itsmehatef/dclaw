@@ -6,6 +6,24 @@ Operational guide for the workspace-path validator shipped in beta.1-paths-harde
 
 `workspace-root` is the allow-root under which any `--workspace` path passed to `dclaw agent create` must live. It is configured per-operator via `dclaw config set workspace-root <path>` and persisted to `$DCLAW_STATE_DIR/config.toml`. At create-time the daemon runs `Policy.Validate` over the raw `--workspace` string: the path is cleaned, NFC-normalized, symlink-resolved (via `filepath.EvalSymlinks`), then checked two ways — (1) a hard-coded denylist of system paths (`/`, `/etc`, `/private/etc`, `/private/var`, `/Library`, `/Applications`, `/opt/homebrew`, the daemon user's `$HOME`, `/Volumes/External`, and the usual macOS suspects); (2) a `filepath.Rel`-based containment check against the configured `workspace-root`, which closes the sibling-prefix bypass — so `/Users/hatef/dclaw-agents-evil` does NOT pass just because the allow-root is `/Users/hatef/dclaw-agents`. If both checks fail, the daemon rejects the create with `workspace_forbidden` (exit 65, wire error `-32007`). The `--workspace-trust "<reason>"` flag is the documented escape hatch: it bypasses the allow-root check (but NOT the denylist), records the operator-supplied reason in `state.db`, surfaces it in `dclaw agent describe`, and writes an `outcome=trust` line to the audit log.
 
+### Docker socket
+
+The Docker control socket is explicitly denylisted across all three common locations. Mounting the Docker socket into a container is equivalent to granting root on the host — the agent could start privileged containers, mount any host path, or control the Docker daemon directly — so the validator rejects any `--workspace` that resolves to one of these paths regardless of the configured `workspace-root`, and `--workspace-trust` does NOT bypass the rejection (denylist is absolute):
+
+- `/var/run/docker.sock` — canonical Linux location (managed by the `docker` package).
+- `/run/docker.sock` — systemd-managed Linux distributions (often a symlink into `/var/run`).
+- `/Users/<user>/Library/Containers/com.docker.docker/Data/docker-raw.sock` — Docker Desktop on macOS. Because the `<user>` component varies per operator, this path is matched by a substring check in `Policy.Validate` (the two invariant fragments `"/Library/Containers/com.docker.docker/"` and suffix `"docker-raw.sock"`) rather than a literal denylist entry. Any canonical path that matches both fragments is rejected with the reason `"is the Docker Desktop control socket"`.
+
+If a legitimate automation workflow truly needs Docker-in-Docker, the correct path is to run the daemon under a separate UID with its own socket, NOT to bind the host `docker.sock` into an agent container.
+
+### Custom image compatibility
+
+Operators who ship their own `--image=...` images alongside or instead of `dclaw-agent:v0.1` must ensure the image is compatible with the beta.2 container posture. Three rules:
+
+1. **`USER` directive sets uid 1000.** The daemon enforces `Config.User = "1000:1000"` at `ContainerCreate` time regardless of the image's own directive, but aligning the Dockerfile-time `USER` makes build-time file ownership match runtime so files created under `/workspace` are readable/writable without a runtime `chown`.
+2. **All runtime writes go to `/tmp`, `/run`, or `/workspace`.** The rootfs is `ReadonlyRootfs: true` in beta.2. `/tmp` and `/run` are tmpfs overlays (rw, `noexec,nosuid,nodev`); `/workspace` is the bind-mounted host directory. Any image that writes to `/etc`, `/opt`, `/usr`, or elsewhere on the rootfs at runtime will hit `EROFS`.
+3. **No runtime dependency on dropped capabilities.** The daemon drops `ALL` capabilities and applies `no-new-privileges` + the default seccomp profile. Images that call `mknod`, `unshare(CLONE_NEWUSER)`, raw `ptrace`, `setuid`-bit binaries, or similar privileged syscalls will fail with `EPERM` at runtime. pi-mono's happy path does not hit any of these.
+
 ## Setting it the first time
 
 ```bash

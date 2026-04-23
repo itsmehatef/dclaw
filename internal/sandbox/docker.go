@@ -241,6 +241,44 @@ func (d *DockerClient) DeleteAgent(ctx context.Context, id string) error {
 	return d.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: true, RemoveVolumes: false})
 }
 
+// ContainerPosture reports the three hardening-relevant fields from an
+// existing container's HostConfig/Config snapshot. Used by
+// cmd/dclawd/main.go legacyScan (beta.2 PR-D) to detect containers
+// created under pre-beta.2 posture and advise the operator to recreate
+// them. Returns an error if the container no longer exists or Docker
+// refuses the inspect — callers treat those failures as "skip this
+// agent" since the daemon should not block startup on a side-channel
+// advisory scan.
+type ContainerPosture struct {
+	CapDropAll     bool   // true if HostConfig.CapDrop contains "ALL"
+	ReadonlyRootfs bool   // value of HostConfig.ReadonlyRootfs
+	User           string // value of Config.User (e.g. "1000:1000")
+}
+
+// InspectPosture returns a ContainerPosture summary for the given container.
+// Used by the daemon's legacyScan to surface pre-beta.2 agents that need
+// `agent delete` + `agent create` to pick up the current hardening.
+func (d *DockerClient) InspectPosture(ctx context.Context, id string) (ContainerPosture, error) {
+	info, err := d.cli.ContainerInspect(ctx, id)
+	if err != nil {
+		return ContainerPosture{}, fmt.Errorf("%w: inspect %s: %v", ErrDockerFailure, id, err)
+	}
+	p := ContainerPosture{}
+	if info.HostConfig != nil {
+		for _, c := range info.HostConfig.CapDrop {
+			if strings.EqualFold(c, "ALL") {
+				p.CapDropAll = true
+				break
+			}
+		}
+		p.ReadonlyRootfs = info.HostConfig.ReadonlyRootfs
+	}
+	if info.Config != nil {
+		p.User = info.Config.User
+	}
+	return p, nil
+}
+
 // InspectStatus returns the container's current status string, or an error
 // if it no longer exists.
 func (d *DockerClient) InspectStatus(ctx context.Context, id string) (string, error) {

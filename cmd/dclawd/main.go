@@ -122,7 +122,7 @@ func main() {
 	// reason. Does NOT block startup — operators need to be able to
 	// start dclawd even if every legacy agent fails the current policy,
 	// because `agent delete` is the prescribed remediation.
-	legacyScan(ctx, logger, repo, policy)
+	legacyScan(ctx, logger, repo, policy, docker)
 
 	// Start background status reconciler.
 	// Run initial sync immediately (before the first 2s tick) so the DB is
@@ -180,42 +180,74 @@ func buildPolicy(logger *slog.Logger, stateDir string) paths.Policy {
 }
 
 // legacyScan logs one Warn per pre-beta.1 agent whose workspace does not
-// validate under the current policy and has no WorkspaceTrustReason set.
-// Intentionally non-blocking: the scan surfaces hazards but does not
-// modify state or refuse startup.
+// validate under the current policy and has no WorkspaceTrustReason set,
+// AND one Warn per pre-beta.2 agent whose container posture is missing
+// any of: CapDrop(ALL), ReadonlyRootfs, User=1000:1000. Intentionally
+// non-blocking: the scan surfaces hazards but does not modify state or
+// refuse startup.
 //
 // When policy.AllowRoot is empty ("not configured"), every legacy agent
 // will trip ErrWorkspaceForbidden with the "no workspace-root configured"
 // reason — that warning has no per-agent signal because the remediation
 // is a single `dclaw config set workspace-root`, not `agent delete`. We
-// skip the scan in that case and log one info-level line instead. The
-// per-agent warnings only fire when an allow-root IS configured and
-// specific agents fall outside it.
-func legacyScan(ctx context.Context, logger *slog.Logger, repo *store.Repo, policy paths.Policy) {
-	if policy.AllowRoot == "" {
-		logger.Info("workspace-root not configured; skipping legacy-agent scan (set with 'dclaw config set workspace-root <path>')")
-		return
-	}
+// skip the workspace-path portion of the scan in that case and log one
+// info-level line instead. The per-agent workspace warnings only fire
+// when an allow-root IS configured and specific agents fall outside it.
+//
+// The beta.2 container-posture portion runs unconditionally — posture
+// weaknesses are independent of workspace-root config. ContainerInspect
+// failures (container removed externally, docker daemon glitch) are
+// silently skipped per agent: this is an advisory scan, not a gate.
+func legacyScan(ctx context.Context, logger *slog.Logger, repo *store.Repo, policy paths.Policy, docker *sandbox.DockerClient) {
 	rows, err := repo.ListAgents(ctx)
 	if err != nil {
 		logger.Warn("legacy scan: list agents failed", "err", err)
 		return
 	}
-	for _, r := range rows {
-		if r.Workspace == "" {
-			continue
-		}
-		if r.WorkspaceTrustReason != "" {
-			continue
-		}
-		if _, verr := policy.Validate(r.Workspace); verr != nil {
-			if errors.Is(verr, paths.ErrWorkspaceForbidden) {
-				logger.Warn("legacy agent with unverified workspace path",
-					"name", r.Name,
-					"workspace", r.Workspace,
-					"reason", verr.Error(),
-				)
+	// Workspace-path portion (beta.1 carryover). Requires AllowRoot configured.
+	if policy.AllowRoot == "" {
+		logger.Info("workspace-root not configured; skipping legacy-agent workspace scan (set with 'dclaw config set workspace-root <path>')")
+	} else {
+		for _, r := range rows {
+			if r.Workspace == "" {
+				continue
 			}
+			if r.WorkspaceTrustReason != "" {
+				continue
+			}
+			if _, verr := policy.Validate(r.Workspace); verr != nil {
+				if errors.Is(verr, paths.ErrWorkspaceForbidden) {
+					logger.Warn("legacy agent with unverified workspace path",
+						"name", r.Name,
+						"workspace", r.Workspace,
+						"reason", verr.Error(),
+					)
+				}
+			}
+		}
+	}
+	// Container-posture portion (beta.2 PR-D). Inspects every existing
+	// container and warns once per agent whose posture is missing any
+	// of the three hardening dimensions. Agents with empty ContainerID
+	// have never been created at the Docker layer (create-time failure
+	// or pre-lifecycle state) and are skipped. Inspect errors (container
+	// removed externally) are silently ignored — the reconciler handles
+	// state drift separately.
+	for _, r := range rows {
+		if r.ContainerID == "" {
+			continue
+		}
+		posture, perr := docker.InspectPosture(ctx, r.ContainerID)
+		if perr != nil {
+			continue
+		}
+		if !posture.CapDropAll || !posture.ReadonlyRootfs || posture.User != "1000:1000" {
+			logger.Warn("agent has pre-beta.2 weak container posture; recreate with 'agent delete' + 'agent create' to apply the hardening",
+				"name", r.Name,
+				"cap_drop_all", posture.CapDropAll,
+				"readonly_rootfs", posture.ReadonlyRootfs,
+				"user", posture.User,
+			)
 		}
 	}
 }

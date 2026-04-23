@@ -45,7 +45,23 @@ type Policy struct {
 // must never be used as an agent workspace. Callers assemble the daemon's
 // runtime Denylist by appending the daemon user's $HOME (resolved at
 // startup via config.Resolve).
+//
+// The docker.sock entries (beta.2 PR-D) close the "Trojan workspace"
+// escape where an operator accidentally binds the Docker control socket
+// into an agent container: mounting docker.sock is equivalent to granting
+// root on the host (the agent could start privileged containers, mount any
+// host path, or control the Docker daemon directly). Two literal paths
+// cover Linux canonical (/var/run) and systemd-managed Linux (/run);
+// Docker Desktop macOS is handled via the suffix match in Policy.Validate
+// since its path contains a per-user component.
+//
+// Ordering note: the docker.sock entries come BEFORE "/var" so the
+// exact-match branch of the validator loop fires first, producing a
+// docker-socket-specific error message instead of the less precise
+// "under denylisted root /var" descendant match.
 var DefaultDenylist = []string{
+	"/var/run/docker.sock",
+	"/run/docker.sock",
 	"/",
 	"/etc",
 	"/usr",
@@ -124,6 +140,20 @@ func (p Policy) Validate(raw string) (string, error) {
 	canonical, err := filepath.EvalSymlinks(cleaned)
 	if err != nil {
 		return "", fmt.Errorf("%w: resolve symlinks %q: %v", ErrWorkspaceForbidden, cleaned, err)
+	}
+
+	// Docker-control-socket pre-check (beta.2 PR-D). The Docker Desktop
+	// macOS socket lives at /Users/<user>/Library/Containers/com.docker.docker/
+	// Data/docker-raw.sock — the per-user component rules out a single
+	// literal denylist entry, so we match by the two substrings that
+	// are invariant across operators. Fires before the denylist loop
+	// so the error message mentions "Docker Desktop control socket"
+	// explicitly instead of the less precise "under /Library" descendant
+	// match. The Linux /var/run/docker.sock and /run/docker.sock cases
+	// are handled via literal denylist entries placed ahead of /var so
+	// the exact-match branch wins there too.
+	if isDockerDesktopSocket(canonical) {
+		return "", fmt.Errorf("%w: %q is the Docker Desktop control socket; binding the docker socket into a container is equivalent to host root", ErrWorkspaceForbidden, canonical)
 	}
 
 	// Denylist match. Exact EqualFold (APFS-safe) or descendant-of-entry.
@@ -226,6 +256,21 @@ func checkForbiddenRunes(raw string) error {
 // we cannot rely on exact-match for the denylist.
 func pathEqualFold(a, b string) bool {
 	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
+// isDockerDesktopSocket reports whether canonical is a Docker Desktop
+// macOS control socket. The path on macOS is
+// /Users/<user>/Library/Containers/com.docker.docker/Data/docker-raw.sock;
+// the <user> component varies per operator, so we match by two invariant
+// substrings instead of a literal denylist entry (avoids a glob
+// dependency per plan §4.4a). Both substrings must match: the bundle
+// path "/Library/Containers/com.docker.docker/" and the socket filename
+// suffix "docker-raw.sock". Case-insensitive to match the APFS-safe
+// treatment applied to every other path in this package.
+func isDockerDesktopSocket(canonical string) bool {
+	lower := strings.ToLower(canonical)
+	return strings.Contains(lower, "/library/containers/com.docker.docker/") &&
+		strings.HasSuffix(lower, "docker-raw.sock")
 }
 
 // isUnderFold reports whether child is a descendant of parent, using
