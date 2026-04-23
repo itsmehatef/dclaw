@@ -270,9 +270,40 @@ All 9 escape-vector categories the independent code reviewer flagged post-beta.1
 - `beta.2.5` — TOML config refactor (#4).
 - `beta.2.6` — platform-port bundle: XDG split (#5) + Windows denylist (#6).
 
-### Final state
+### Final state (pre-hotfix-cascade)
 
 - Main tip (pre-tag): `d08ccad`.
 - About to tag: `v0.3.0-beta.2-sandbox-hardening`.
 - CI: build green on every beta.2 commit (main-push); docker-smoke pending on the tag push.
-- Next: orchestrator tags + pushes tag; then reports docker-smoke outcome.
+
+### Hotfix cascade (tag-triggered docker-smoke surfaced 4 latent bugs)
+
+Tag `v0.3.0-beta.2-sandbox-hardening` was the first end-to-end run of beta.2 posture against a live docker daemon. Unit tests and `bash -n` were all green; docker-dind uncovered what mock-only testing couldn't. Four hotfixes landed in sequence, each with its own tag.
+
+| Hotfix | Tag | Commit | Problem → Fix |
+|---|---|---|---|
+| 1 | `.1` | `f979ad3` | `SecurityOpt: "seccomp=default"` — Docker rejects as invalid JSON. Docker's default profile applies automatically when `seccomp=` isn't set. Dropped the entry. |
+| 2 | `.2` | `3afa4b6` | Test 19 PidsLimit assertion parsed `jobs | wc -l` as the success signal — but when the cap fires mid-loop, the shell emits "Cannot fork" before `wc` runs. Accept kernel fork-refusal as equivalent proof. |
+| 3 | `.3` | `f1c3065` | Test 20 `/workspace` write failed. GH Actions runner uid 1001 vs container uid 1000 (post-PR-C) = DAC denial; PR-A dropped CAP_DAC_OVERRIDE. `chmod 0777 $STATE_DIR_T20` on the test workspace before `agent start`. Real users whose uid happens to be 1000 don't hit this (common default on Linux). |
+| 4 | `.4` | `e7ec8c0` | Test 23 probe #2: `chmod u+s /tmp/x; [ -u /tmp/x ]` fired false BREACH. `no-new-privileges` blocks setuid-bit-becoming-effective at `execve()`, not `chmod`. Setting the bit on your own file is always allowed. Replaced with `/proc/self/status` `NoNewPrivs` check — direct kernel flag. |
+
+### Final state (beta.2 green)
+
+- **Main tip: `e7ec8c0`**.
+- **Latest green tag: `v0.3.0-beta.2-sandbox-hardening.4`** — build 18s + docker-smoke 55s, all 23 smoke tests pass.
+- CI: both jobs green end-to-end for the first time on beta.2 content.
+- Prior tags (`v0.3.0-beta.2-sandbox-hardening[.1/.2/.3]`) retained as historical markers of each failed attempt.
+
+### Meta-lessons from the beta.2 hotfix cascade
+
+- **Docker SDK `SecurityOpt` doesn't have a "profile-by-name" syntax for seccomp.** The architect assumed `seccomp=default` was a valid selector; it isn't. Docker only accepts `unconfined` or an inline JSON profile. When you want the built-in default, don't set the option. Lesson: architect agents should have verified the SDK shape before writing the value.
+- **Shell-parsed output fails when the command errors mid-pipeline.** Test 19 assumed `jobs | wc -l` would always run. It doesn't if the shell exhausts its PidsLimit trying to reach that line. Assertions should accept multiple equivalent pass signals.
+- **Container UID mismatches are a real operational gotcha, not just a plan-doc footnote.** The plan §4.3 mentioned this in a rollout-risk bullet; CI surfaced it immediately. Users whose uid differs from 1000 will hit the same. Filing this as a beta.3+ ergonomic concern: the daemon could chown bind-mounted workspaces to uid 1000 at start time, or a `--workspace-uid` flag could let operators opt into the current uid.
+- **"Does the kernel flag do X?" is not a test you can write in `[ ... ]` brackets.** Probe #2 conflated file-permission-bit setting with privilege-escalation-at-execve. Reading `/proc/self/status` is the canonical check for any `prctl`-managed flag.
+- **5 tags to ship a release is a lot.** beta.1 needed 3 (initial + 2 hotfixes); beta.2 needed 5. Both saw the same pattern: tag push is the first real integration signal. Consider making `docker-smoke` run on `main` pushes (not just tag pushes) so the signal arrives before tagging — follow-up for the CI config.
+
+### Follow-ups refreshed
+
+- All prior `beta.2.X` plan items unchanged.
+- Add: **[meta] make `docker-smoke` run on main pushes** — pull the signal earlier than tag time. Saves the tag-spam we just went through.
+- Add: **[UX] container UID mismatch handling** — daemon could chown workspaces or let operators pick an in-container uid.
