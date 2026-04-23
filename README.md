@@ -43,7 +43,7 @@ dclaw/
 └── README.md
 ```
 
-## Building the CLI and Daemon (v0.3.0-beta.1-paths-hardening.2)
+## Building the CLI and Daemon (v0.3.0-beta.2-sandbox-hardening)
 
 Requires Go 1.25+.
 
@@ -56,7 +56,7 @@ make install
 
 # Check the build
 ./bin/dclaw version
-# dclaw version 0.3.0-beta.1-paths-hardening.2 (commit abc1234, built 2026-04-22T...Z, go1.25.x)
+# dclaw version 0.3.0-beta.2-sandbox-hardening (commit abc1234, built 2026-04-24T...Z, go1.25.x)
 ```
 
 ### Running
@@ -102,7 +102,7 @@ escape hatch, and the append-only audit-log format.
 
 ## Status
 
-Early development — v0.3.0-beta.1-paths-hardening: daemon + TUI + chat + workspace validator shipped; beta.2 sandbox-hardening next.
+Early development — v0.3.0-beta.2-sandbox-hardening: container posture hardened (cap drop, seccomp, ReadonlyRootfs, non-root UID, docker.sock denylist) on top of paths-hardening.
 
 ## License
 

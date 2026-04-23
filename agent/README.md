@@ -60,14 +60,17 @@ Runs 4 end-to-end tests validating basic operation, sandboxing, workspace persis
 - `tini` as PID 1 for signal handling
 - `/workspace` as the only writable host-mounted directory
 
-## Known limitations (v0.1)
+## Current scope (as of v0.3.0-beta.2-sandbox-hardening)
 
-- Single-turn only (one prompt, one response)
-- No conversation history (--no-session)
-- No streaming output (buffered final text)
-- No per-agent network allowlist (relies on Docker default bridge)
-- No worker spawning (single agent per container)
-- No channel integration (CLI input only)
-- Workspace ownership is implicit — /workspace is created by WORKDIR when the container builds, owned by the node user because USER node precedes WORKDIR. If the upstream node:22-bookworm-slim image ever pre-creates /workspace as root, the agent will silently fail to write. Phase 2 will add an explicit runtime check.
+Fully wired:
 
-All of the above are addressed in Phase 2+.
+- Multi-turn chat via `dclaw agent chat` (alpha.3).
+- Streaming output (alpha.3).
+- Workspace bind-mount at `/workspace` (phase-1 baseline).
+- Daemon-enforced container posture (beta.2): `CapDrop: ALL`, `no-new-privileges`, `seccomp=default`, `ReadonlyRootfs: true` with `/tmp` + `/run` tmpfs, `User: 1000:1000`, `PidsLimit: 256`, docker.sock denylist.
+
+Still open:
+
+- Per-agent network egress allowlist (`protocol.AgentCreateParams.EgressAllowlist` exists but unwired).
+- Worker spawning (parallel sub-agents).
+- Channel integration (daemon-managed agent-to-agent message channels).
