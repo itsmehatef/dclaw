@@ -8,14 +8,32 @@
 
 ## 0. Status
 
-**DRAFT (2026-04-19).** Plan under review. Build not started.
+**SHIPPED (2026-04-22) as `v0.3.0-beta.1-paths-hardening.2`.** Closed on origin at tag; see `WORKLOG.md` 2026-04-20 and 2026-04-21/22 for the ship notes.
+
+**Commits (on `main`, in order):**
+
+| Hash | Scope |
+|------|-------|
+| `f23dd70` | docs: plan + WORKLOG |
+| `c9ea6c7` | beta.1(A): `config.Resolve` refactor + socket split-brain fix |
+| `3155900` | beta.1(B): `--state-dir` flag + `DCLAW_WORKSPACE_ROOT` env stub |
+| `3288b0a` | beta.1(C): validator + audit log + `--workspace-trust` + `config` cmd |
+| `26ddc96` | beta.1(BC): wire `--state-dir` through PR-C's `internal/cli` sites |
+| `bbd85d1` | beta.1(D): smoke-daemon.sh rewrite + workspace-root runbook + shellcheck |
+| `0042e98` | docs(WORKLOG): 2026-04-20 build cycle |
+| `4423cce` | beta.1(E): review fixes |
+| `8dcb275` | beta.1(F): gate macOS-specific validator test rows for Linux CI |
+| `29db7b7` | ci: fix stale smoke-cli Test 5 expectation |
+| `37c64d8` | hotfix(smoke): export DCLAW_WORKSPACE_ROOT |
+| `34367c5` | hotfix(smoke): fix Tests 14/15/16 assertions |
 
 | Field | Value |
 |---|---|
-| **Target tag** | `v0.3.0-beta.1-paths-hardening` (or `v0.3.0-beta.1` if this is the first beta.1 tag — see §11 Q1) |
+| **Target tag** | `v0.3.0-beta.1-paths-hardening.2` (shipped; `.1` and unsuffixed precursors left as historical markers) |
 | **Branch** | `main` (single batched review cycle) |
 | **Base commit** | `76405ac` (`v0.3.0-alpha.4.1`) |
 | **Est. duration** | 2–3 days (4 PRs, sequenced A → B‖C → D) |
+| **Actual duration** | 4 days (2026-04-19 plan → 2026-04-22 ship; PR-A through PR-D built 2026-04-20, review + ship + post-ship hotfix saga 2026-04-21/22) |
 | **Prereqs** | alpha.4.1 green; smoke-daemon.sh Tests 1-13 green on the alpha.4.1 baseline |
 | **Incident trigger** | 2026-04-18 machine-wipe RCA (see `WORKLOG.md` 2026-04-19) |
 

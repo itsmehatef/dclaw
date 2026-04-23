@@ -43,9 +43,9 @@ dclaw/
 └── README.md
 ```
 
-## Building the CLI (v0.2.0-cli)
+## Building the CLI and Daemon (v0.3.0-beta.1-paths-hardening.2)
 
-Requires Go 1.22+.
+Requires Go 1.25+.
 
 ```bash
 # Build the binary into ./bin/dclaw
@@ -56,18 +56,40 @@ make install
 
 # Check the build
 ./bin/dclaw version
-# dclaw version 0.2.0-cli (commit abc1234, built 2026-04-14T...Z, go1.22.x)
+# dclaw version 0.3.0-beta.1-paths-hardening.2 (commit abc1234, built 2026-04-22T...Z, go1.25.x)
 ```
 
-### CLI status in v0.2.0-cli
+### Running
 
-Only `dclaw version` and `dclaw --help` are fully wired. Every command that
-would normally require the dclaw daemon (`agent create`, `agent list`, `channel
-attach`, `daemon start`, etc.) exits with code **69 (EX_UNAVAILABLE)** and a
-message pointing at the next milestone. Use `-o json` to receive a structured
-`{"error": "feature_not_ready", ...}` envelope for scripting.
+dclaw is a container-native multi-agent platform. The CLI, daemon (`dclawd`),
+TUI, and workspace validator all ship together.
 
-The daemon ships in `v0.3.0-daemon`.
+First-time setup, then start the daemon, create an agent, and chat:
+
+```bash
+# One-time: tell dclaw which host directory is the agent-workspace root.
+dclaw config set workspace-root ~/dclaw-agents
+
+# Start the background daemon.
+dclaw daemon start
+
+# Create and start an agent whose workspace sits under the allow-root.
+dclaw agent create foo --image=dclaw-agent:v0.1 --workspace=~/dclaw-agents/foo
+dclaw agent start foo
+
+# One-shot chat round-trip.
+dclaw agent chat foo --one-shot "hello"
+```
+
+Run bare `dclaw` (no subcommand) to enter the interactive TUI.
+
+Commands that need the daemon exit with code 69 and structured JSON
+(`--output json`) containing `"error": "daemon_unreachable"` when it's not
+running.
+
+See [`docs/workspace-root.md`](docs/workspace-root.md) for the workspace-path
+validator runbook — allow-root configuration, the `--workspace-trust=<reason>`
+escape hatch, and the append-only audit-log format.
 
 ## Tech Stack
 
@@ -80,7 +102,7 @@ The daemon ships in `v0.3.0-daemon`.
 
 ## Status
 
-Early development — Phase 2 CLI (v0.2.0-cli): CLI bones shipped; daemon next (v0.3.0-daemon).
+Early development — v0.3.0-beta.1-paths-hardening: daemon + TUI + chat + workspace validator shipped; beta.2 sandbox-hardening next.
 
 ## License
 
