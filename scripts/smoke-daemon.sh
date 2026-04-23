@@ -352,22 +352,32 @@ OUT=$("$DCLAW_BIN" --state-dir "$STATE_DIR_T19" --daemon-socket "$SOCKET_T19" ag
   -- sh -c 'i=0; while [ "$i" -lt 300 ]; do (sleep 30) & i=$((i+1)); done; jobs | wc -l' 2>&1)
 EX=$?
 set -e
-JOB_COUNT=$(echo "$OUT" | tail -n1 | tr -d '[:space:]')
-# The spawn loop is expected to hit EAGAIN partway through, producing
-# non-zero exit status from the sub-shell; accept any result where the
-# observed job count is bounded below 300. If PidsLimit is missing, we
-# will see 300 (every fork succeeded) and fail.
-case "$JOB_COUNT" in
-  ''|*[!0-9]*)
-    fail "Test 19: could not parse job count from output: $OUT"
-    ;;
-esac
-if [ "$JOB_COUNT" -ge 300 ]; then
-  fail "Test 19: PidsLimit not enforced; spawned $JOB_COUNT processes (output: $OUT)"
+# Pass condition (either):
+#   (a) output contains a kernel-level fork refusal string ("Cannot fork",
+#       "fork: retry", "Resource temporarily unavailable") — the PidsLimit
+#       cap fired mid-loop and the shell couldn't spawn the next subshell.
+#       This IS the proof we want: the kernel enforced EAGAIN-from-fork.
+#   (b) no fork-refusal string, and the last line is a numeric count < 300.
+# Fail only if all 300 forks succeeded AND the count at the end is >= 300.
+if echo "$OUT" | grep -qiE 'cannot fork|fork: retry|resource temporarily unavailable'; then
+  # (a) kernel refused a fork — PidsLimit enforced mid-loop.
+  TAIL_SNIP=$(echo "$OUT" | tail -n 2 | tr '\n' ' ')
+  cleanup_t19
+  trap cleanup EXIT
+  pass "PidsLimit enforced (kernel refused fork; output: $TAIL_SNIP)"
+else
+  # (b) no kernel error — check the numeric count.
+  JOB_COUNT=$(echo "$OUT" | tail -n1 | tr -d '[:space:]')
+  if [ -z "$JOB_COUNT" ] || ! printf '%s' "$JOB_COUNT" | grep -qE '^[0-9]+$'; then
+    fail "Test 19: unexpected output shape (no fork-refusal, no numeric count): $OUT"
+  fi
+  if [ "$JOB_COUNT" -ge 300 ]; then
+    fail "Test 19: PidsLimit not enforced; spawned $JOB_COUNT processes (output: $OUT)"
+  fi
+  cleanup_t19
+  trap cleanup EXIT
+  pass "PidsLimit enforced (spawned $JOB_COUNT < 300 processes before cap)"
 fi
-cleanup_t19
-trap cleanup EXIT
-pass "PidsLimit enforced (spawned $JOB_COUNT < 300 processes before EAGAIN)"
 
 echo "--- Test 20: ReadonlyRootfs — /etc + /opt not writable; /tmp + /workspace writable ---"
 # Four probes in one test exercise the ReadonlyRootfs + Tmpfs posture:
