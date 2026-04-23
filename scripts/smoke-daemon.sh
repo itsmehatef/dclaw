@@ -432,4 +432,42 @@ cleanup_t20
 trap cleanup EXIT
 pass "ReadonlyRootfs enforced (/etc, /opt non-writable); /tmp + /workspace writable"
 
+echo "--- Test 21: non-root UID — id -u returns 1000 ---"
+# Probe the container from the inside: `id -u` and `id -g` must both
+# report 1000. Under pre-beta.2 posture, a regressed image with
+# `USER root` would report 0. Post-beta.2 (PR-C), the daemon sets
+# container.Config.User = "1000:1000" at create time, overriding
+# any image USER directive. See
+# docs/phase-3-beta2-sandbox-hardening-plan.md §4.3 and §4.3a.
+STATE_DIR_T21=$(mktemp -d -t dclaw-smoke-t21-XXXXXXXX)
+case "$STATE_DIR_T21" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: STATE_DIR_T21=$STATE_DIR_T21 outside expected prefix" >&2; exit 1;;
+esac
+SOCKET_T21="$STATE_DIR_T21/dclaw.sock"
+cleanup_t21() {
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T21" --daemon-socket "$SOCKET_T21" daemon stop >/dev/null 2>&1 || true
+  docker rm -f dclaw-smoke-uid-probe >/dev/null 2>&1 || true
+  rm -rf "${STATE_DIR_T21:?refuse empty}"
+}
+trap cleanup_t21 EXIT
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T21" --daemon-socket "$SOCKET_T21" daemon start || fail "t21-start"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T21" --daemon-socket "$SOCKET_T21" agent create smoke-uid-probe \
+  --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T21" || fail "t21-create"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T21" --daemon-socket "$SOCKET_T21" agent start smoke-uid-probe || fail "t21-agent-start"
+
+UID_OBSERVED=$("$DCLAW_BIN" --state-dir "$STATE_DIR_T21" --daemon-socket "$SOCKET_T21" agent exec smoke-uid-probe -- id -u 2>/dev/null | tr -d '[:space:]')
+if [ "$UID_OBSERVED" != "1000" ]; then
+  fail "Test 21: expected uid=1000 inside container, got '$UID_OBSERVED'"
+fi
+
+GID_OBSERVED=$("$DCLAW_BIN" --state-dir "$STATE_DIR_T21" --daemon-socket "$SOCKET_T21" agent exec smoke-uid-probe -- id -g 2>/dev/null | tr -d '[:space:]')
+if [ "$GID_OBSERVED" != "1000" ]; then
+  fail "Test 21: expected gid=1000 inside container, got '$GID_OBSERVED'"
+fi
+
+cleanup_t21
+trap cleanup EXIT
+pass "non-root UID enforced (uid=1000 gid=1000 inside container)"
+
 echo "All daemon smoke tests passed."

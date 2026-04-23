@@ -149,7 +149,25 @@ func TestCreateAgentAppliesBeta2HardeningPosture(t *testing.T) {
 			if fake.lastHostCfg == nil {
 				t.Fatalf("captureClient did not record HostConfig")
 			}
+			if fake.lastCfg == nil {
+				t.Fatalf("captureClient did not record Config")
+			}
 			got := fake.lastHostCfg
+			gotCfg := fake.lastCfg
+
+			// container.Config.User must be "1000:1000" — the
+			// DefaultContainerUser constant. The field lives on
+			// container.Config (not HostConfig) in Docker SDK v26;
+			// daemon-side enforcement overrides any image USER
+			// directive so a future image regression to root is
+			// caught at container-start time. See
+			// docs/phase-3-beta2-sandbox-hardening-plan.md §4.3.
+			if gotCfg.User != DefaultContainerUser {
+				t.Errorf("Config.User = %q, want %q", gotCfg.User, DefaultContainerUser)
+			}
+			if gotCfg.User != "1000:1000" {
+				t.Errorf("Config.User literal = %q, want \"1000:1000\"", gotCfg.User)
+			}
 
 			// CapDrop: ["ALL"] — all Linux capabilities dropped. The
 			// HostConfig field is strslice.StrSlice (a []string named

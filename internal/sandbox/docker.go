@@ -37,6 +37,12 @@ var (
 // headroom while bounding a fork-bomb / PID-DoS primitive.
 const DefaultPidsLimit int64 = 256
 
+// DefaultContainerUser forces the in-container UID:GID even if the
+// image's USER directive is missing or regresses to root. Format is
+// Docker-canonical "uid:gid". pi-mono ships as node (uid 1000) in
+// dclaw-agent:v0.1; this enforces it daemon-side as belt-and-suspenders.
+const DefaultContainerUser = "1000:1000"
+
 // DefaultTmpfs is the tmpfs mount table applied to every agent container
 // alongside ReadonlyRootfs. The rootfs is read-only post-beta.2, so we
 // explicitly carve out the two paths pi-mono writes at runtime:
@@ -194,6 +200,7 @@ func (d *DockerClient) CreateAgent(ctx context.Context, spec CreateSpec) (string
 		Image:  spec.Image,
 		Env:    env,
 		Labels: labels,
+		User:   DefaultContainerUser,
 		Tty:    false,
 	}
 	hostCfg := &container.HostConfig{

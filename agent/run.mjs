@@ -2,6 +2,11 @@
 // dclaw-agent entrypoint — spawns pi-mono's print-mode CLI with the user's prompt
 // and inherits its stdio. Exits with pi's exit code.
 
+if (process.getuid() === 0) {
+  console.error("error: dclaw-agent must not run as uid 0; daemon should have applied --user=1000:1000");
+  process.exit(70);
+}
+
 import { spawn } from "node:child_process";
 import * as os from "node:os";
 

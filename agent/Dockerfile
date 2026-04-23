@@ -42,6 +42,8 @@ RUN --mount=type=cache,id=dclaw-npm-cache,target=/root/.npm,sharing=locked \
 FROM base AS runtime
 
 # The `node` user (uid 1000) is pre-created by the upstream image.
+# INVARIANT: container must run as uid 1000 (node).
+# Daemon enforces via container.Config.User; image also ships USER node.
 USER node
 WORKDIR /workspace
 
