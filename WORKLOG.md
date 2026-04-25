@@ -364,3 +364,15 @@ All 23 smoke tests pass. Test 15 now exercises `--workspace-trust` legitimately 
 - `docs/workspace-root.md` updated. Diff: 3 files, +304/-6. CI: build 20s + docker-smoke 53s on tag.
 
 Agent flagged a minor spec ambiguity around `MaxFiles=N`: I'd written "MaxFiles=3 → .1, .2, .3 exist" (4 total files), but the docs + rename-chain logic implies "MaxFiles=N total files retained". Agent reconciled to the docs reading. Either's defensible; agent picked the consistent one.
+
+---
+
+## 2026-04-25 — beta.2.4 `dclaw doctor` health-check subcommand
+
+**`v0.3.0-beta.2.4-doctor` (`646b3a4`) — clean ship.** New `dclaw doctor` cobra command runs an ordered battery of 7 checks: `config_resolved`, `workspace_root_configured`, `workspace_root_valid`, `daemon_reachable`, `docker_reachable`, `agent_image_present`, `audit_log_writable`. Each emits OK | WARN | FAIL with a short message; exit 0 unless any FAIL. `-o json` available.
+
+`dclaw doctor workspace <path>` sub-subcommand pre-flights a path through `Policy.Validate` without creating an agent or polluting `audit.log` — lets users iterate on `--workspace` values cheaply.
+
+4 new tests; subprocess-built binary used in `TestDoctorWorkspaceForbidden` to capture exact `ExitDataErr=65` (since `go run` mangles exit codes). Local `doctorDenylist` package-var pattern mirrors init's existing approach for macOS test compatibility. Docker SDK used directly for `docker_reachable` + `agent_image_present` (internal/sandbox adapter would have needed broader changes).
+
+Diff: 4 files, +923/-0. CI: build 21s + docker-smoke 52s on tag.
