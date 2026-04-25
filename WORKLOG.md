@@ -388,3 +388,95 @@ Backward compat preserved: existing single-key `config.toml` files written by be
 Agent flagged 3 minor deviations: relaxed an assertion that depended on the specific homegrown error wording, removed a `TestWriteConfigFileRejectsQuote` test that was guarding a homegrown-writer footgun no longer present, and hoisted `resolveAuditConfig` above the `--migrate-only` early-return so the audit-config info log line fires in both paths. All consistent with the spec's intent.
 
 Diff: 6 files, +289/-76. CI: build 59s + docker-smoke 1m18s on tag.
+
+---
+
+## 2026-04-25 — beta.2.6 platform-port bundle (XDG + Windows denylist) — series complete
+
+**`v0.3.0-beta.2.6-platform-port` (`fe69729`) — clean ship. FINAL patch in the beta.2.X series.**
+
+Two platform-portability fixes bundled per Plan B (natural-affinity):
+
+**XDG state-dir on Linux** (Plan §12 #4):
+- Linux: prefer `$XDG_STATE_HOME/dclaw` if set, fall back to `~/.local/state/dclaw`, fall back to `~/.dclaw` (legacy).
+- macOS: `~/.dclaw` unchanged (XDG isn't a Darwin convention).
+- Backward compat: existing `~/.dclaw` installs work unchanged.
+
+**Windows denylist** (Plan §12 #5):
+- `runtime.GOOS == "windows"` adds `C:\Windows`, `C:\Program Files`, `C:\Program Files (x86)`, `C:\ProgramData`, `C:\Users\Default|Public|All Users` to `DefaultDenylist`.
+- Defensive scaffolding only — dclaw isn't actively tested on Windows.
+
+Agent flagged 3 deviations:
+- Pre-existing `internal/cli/daemon.go` POSIX-only syscalls (`Kill`, `Setsid`) prevent `GOOS=windows go build ./cmd/dclaw`. Out of scope. `cmd/dclawd` does cross-compile clean.
+- Pragmatic scope creep into `internal/paths/`: added `//go:build !windows` to `opensafe.go` + new `opensafe_windows.go` stub returning `ErrWorkspaceForbidden`. Without this, every binary importing `internal/paths` fails Windows cross-compile. Justified.
+- Updated `TestResolvePrecedence`'s "default-when-nothing-set" row to compute via `defaultStateDir()` instead of hard-coded `~/.dclaw` — XDG branch on Linux CI would have broken the literal assertion. Same precedence semantics, just portable.
+
+Diff: 9 files, +500/-12. CI: build 17s + docker-smoke 55s on tag.
+
+---
+
+## 2026-04-25 — beta.2.X series complete
+
+**5 consecutive clean ships, no hotfix cascades.** The CI hygiene fix from beta.2.1 (docker-smoke on main pushes) eliminated the need for tag-after-tag hotfix cycles that plagued beta.1 (3 patch tags) and beta.2 (4 patch tags before green).
+
+| Tag | Theme | Diff | Notes |
+|---|---|---|---|
+| `v0.3.0-beta.2.1-smoke-hygiene` | Test 15 macOS + 4 polish + CI trigger | 6 files, +266/-48 | First main-push docker-smoke run. |
+| `v0.3.0-beta.2.2-easier-setup` | `dclaw init` wizard | 4 files, +524/-4 | First-run UX. |
+| `v0.3.0-beta.2.3-audit-rotation` | 10MB / 5 files default | 3 files, +304/-6 | Bounds audit log growth. |
+| `v0.3.0-beta.2.4-doctor` | `dclaw doctor` health-check | 4 files, +923/-0 | Pre-flight diagnostics. |
+| `v0.3.0-beta.2.5-toml-config` | `pelletier/go-toml/v2` refactor | 6 files, +289/-76 | `[audit]`/`[daemon]` sub-tables. |
+| `v0.3.0-beta.2.6-platform-port` | XDG + Windows denylist | 9 files, +500/-12 | Cross-platform scaffolding. |
+
+**Total: ~+2800 lines across 5 patches.** Every release: green build + green docker-smoke on both main push and tag push.
+
+### Tag history end of beta.2.X
+
+```
+v0.3.0-beta.2.6-platform-port      ← latest
+v0.3.0-beta.2.5-toml-config
+v0.3.0-beta.2.4-doctor
+v0.3.0-beta.2.3-audit-rotation
+v0.3.0-beta.2.2-easier-setup
+v0.3.0-beta.2.1-smoke-hygiene
+v0.3.0-beta.2-sandbox-hardening.4  (last beta.2 phase tag)
+v0.3.0-beta.2-sandbox-hardening.3
+v0.3.0-beta.2-sandbox-hardening.2
+v0.3.0-beta.2-sandbox-hardening.1
+v0.3.0-beta.2-sandbox-hardening    (initial beta.2 tag, red — historical)
+v0.3.0-beta.1-paths-hardening.3    (docs patch)
+v0.3.0-beta.1-paths-hardening.2    (last beta.1 phase tag, green)
+v0.3.0-beta.1-paths-hardening.1
+v0.3.0-beta.1-paths-hardening      (initial, red — historical)
+v0.3.0-alpha.4.1
+v0.3.0-alpha.4 / .3 / .2 / .1
+v0.2.0-cli
+v0.1.0
+```
+
+### What's covered now
+
+dclaw daemon now ships with:
+- **paths**: `--workspace` validated against denylist + allow-root + symlink resolution + TOCTOU-hardened OpenSafe + audit log per decision.
+- **sandbox**: container runs uid 1000, no caps, no-new-privileges, default seccomp, ReadonlyRootfs + tmpfs overlays, PidsLimit 256, docker.sock denylisted.
+- **operator UX**: `dclaw init`, `dclaw doctor`, `dclaw config get/set`, structured `workspace_forbidden` errors with remediations.
+- **state**: `[audit]` rotation tunable via TOML config (default 10MB / 5 files), full TOML schema for future config keys.
+- **portability**: XDG state-dir on Linux (with backward-compat fallback), Windows denylist scaffolding for `cmd/dclawd` cross-compile.
+- **CI**: build + docker-smoke on every main push; smoke-daemon.sh has 23 tests covering Tests 1-23 (CRUD + validator + audit + posture).
+
+### Outstanding follow-ups (not yet addressed)
+
+- **[beta.3+] Container UID mismatch**: real users with non-1000 uids hit `/workspace` write denials. Fix: daemon-side chown on workspace mount, or `--workspace-uid` flag.
+- **[future] Custom seccomp profile** (tighter than Docker's default): plan §11 Q2.
+- **[future] Per-agent memory + CPU limits**: plan §12 follow-up.
+- **[future] Network egress allowlist**: `EgressAllowlist` field exists on `WorkerSpawn` protocol type but isn't wired through.
+- **[future] Image security rebase**: pin base image, apt CVE sweep, distroless swap.
+- **[future] `cmd/dclaw` Windows cross-compile**: `internal/cli/daemon.go` uses POSIX-only syscalls; needs Windows stubs.
+- **[future] Original beta.1 content lost in 2026-04-18 wipe**: logs view, toasts, chat history persistence. Will need to be re-derived for v0.3.0 GA.
+
+### Final state
+
+- Main tip: `fe69729` (beta.2.6 ship).
+- Latest green tag: `v0.3.0-beta.2.6-platform-port`.
+- 5-clean-ship streak. No outstanding red CI.
+- Total tag count on v0.3.0 line: 19 (alpha.1..4.1 + beta.1 phase + 3 patches + beta.2 phase + 4 patches + 6 beta.2.X patches).
