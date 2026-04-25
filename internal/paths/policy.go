@@ -3,6 +3,7 @@ package paths
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -94,9 +95,10 @@ type Policy struct {
 }
 
 // DefaultDenylist is the canonical macOS + common Unix list of paths that
-// must never be used as an agent workspace. Callers assemble the daemon's
-// runtime Denylist by appending the daemon user's $HOME (resolved at
-// startup via config.Resolve).
+// must never be used as an agent workspace, plus a Windows-system block
+// that activates only when the current binary is Windows. Callers assemble
+// the daemon's runtime Denylist by appending the daemon user's $HOME
+// (resolved at startup via config.Resolve).
 //
 // The docker.sock entries (beta.2 PR-D) close the "Trojan workspace"
 // escape where an operator accidentally binds the Docker control socket
@@ -111,7 +113,22 @@ type Policy struct {
 // exact-match branch of the validator loop fires first, producing a
 // docker-socket-specific error message instead of the less precise
 // "under denylisted root /var" descendant match.
-var DefaultDenylist = []string{
+//
+// Windows entries (beta.2.6 / Plan §12 #5) are defensive scaffolding for
+// `runtime.GOOS == "windows"` builds. dclaw is not actively tested on
+// Windows yet, but appending the well-known Windows-system paths here
+// closes the silent fail-open that would otherwise let an operator who
+// runs `go build` on Windows bind C:\Windows or C:\Program Files into
+// an agent. The denylist's existing case-insensitive matching applies
+// unchanged; we don't need any Windows-specific code in Policy.Validate.
+var DefaultDenylist = buildDefaultDenylist()
+
+// defaultUnixDenylist is the macOS + common-Unix denylist that applies on
+// every OS. Windows builds also receive these (harmless: a Windows path
+// can never equal "/etc") and the Windows-specific block is appended on
+// top via buildDefaultDenylist's runtime.GOOS check. Splitting the slice
+// out as a package-level var keeps the canonical entries grep-able.
+var defaultUnixDenylist = []string{
 	"/var/run/docker.sock",
 	"/run/docker.sock",
 	"/",
@@ -129,6 +146,41 @@ var DefaultDenylist = []string{
 	"/Library",
 	"/Applications",
 	"/opt",
+}
+
+// defaultWindowsDenylist is the well-known Windows-system block appended
+// to DefaultDenylist when runtime.GOOS == "windows". Drive-root prefixes
+// (C:\, D:\) are deliberately omitted — too noisy and matched implicitly
+// by the system-path entries. The validator's existing EqualFold
+// comparison handles the case-insensitivity that Windows filesystems
+// require.
+var defaultWindowsDenylist = []string{
+	`C:\Windows`,
+	`C:\Program Files`,
+	`C:\Program Files (x86)`,
+	`C:\ProgramData`,
+	`C:\Users\Default`,
+	`C:\Users\Public`,
+	`C:\Users\All Users`,
+}
+
+// buildDefaultDenylist returns the active denylist for the current OS.
+// Always includes the Unix entries (harmless on Windows because the
+// validator's EqualFold + descendant checks never match a Windows-shaped
+// path against "/etc"); appends the Windows block when GOOS == windows.
+//
+// Implemented as a function-result rather than two build-tagged files
+// because (a) the lists are short, (b) keeping all entries in one file
+// makes a `grep DefaultDenylist` audit easy, and (c) it lets a future
+// non-Windows runtime check (e.g. a `--posix-only` mode for testing)
+// reuse the same slice composition.
+func buildDefaultDenylist() []string {
+	out := make([]string, 0, len(defaultUnixDenylist)+len(defaultWindowsDenylist))
+	out = append(out, defaultUnixDenylist...)
+	if runtime.GOOS == "windows" {
+		out = append(out, defaultWindowsDenylist...)
+	}
+	return out
 }
 
 // Validate runs the full validator pipeline against raw. On success it

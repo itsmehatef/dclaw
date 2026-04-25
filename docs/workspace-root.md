@@ -184,3 +184,43 @@ DELETE FROM _migrations WHERE version > '0001';
 ```
 
 Then start `dclawd`; goose will re-apply `0002_workspace_trust.sql` cleanly on top of the restored `0001` state. Backups taken after 2026-04-18 against the authoritative post-wipe baseline (`76405ac` or later) do NOT need this step — the migration history is already consistent with beta.1-paths-hardening. See plan §11 Q1 for background on the renumbering decision.
+
+## Cross-platform notes
+
+dclaw is actively tested on macOS and Linux. Beta.2.6 (Plan §12 #4 + §12 #5) made two platform-portability changes that operators on either OS should be aware of, and added defensive scaffolding for a future Windows port.
+
+### State directory defaults by OS
+
+The state directory holds `state.db`, `audit.log*`, `config.toml`, the daemon socket, and per-agent log dirs. The default location depends on the OS and on whether `$XDG_STATE_HOME` is set. The full ladder, in precedence order, is:
+
+1. `--state-dir <path>` flag on `dclaw` or `dclawd` — wins everywhere.
+2. `$DCLAW_STATE_DIR` env var — wins everywhere when set.
+3. Platform default (the rest of this section).
+
+| OS | `XDG_STATE_HOME` | `~/.dclaw` exists | Default state-dir |
+|---|---|---|---|
+| Linux | set, writable | no | `$XDG_STATE_HOME/dclaw` |
+| Linux | set, writable | yes | `~/.dclaw` (legacy wins for upgrades) |
+| Linux | unset / unwritable | no, but `~/.local/state` exists | `~/.local/state/dclaw` |
+| Linux | unset / unwritable | yes | `~/.dclaw` |
+| Linux | unset / unwritable | no, no `~/.local/state` | `~/.dclaw` |
+| macOS | (any) | (any) | `~/.dclaw` (XDG is not a Darwin convention) |
+| Windows (experimental) | (any) | (any) | `~/.dclaw` (no XDG; placeholder) |
+
+Migration: existing Linux installs that have a populated `~/.dclaw` from beta.2.5 or earlier keep using it after upgrading to beta.2.6 — the legacy-wins branch fires on first start. New Linux installs (no prior `~/.dclaw`) land in the XDG path. Operators who want to migrate an existing legacy install onto XDG can `mv ~/.dclaw $XDG_STATE_HOME/dclaw` while `dclawd` is stopped, then start the daemon — both flag-and-env precedence and the lookup ladder will route to the new path.
+
+### Windows experimental support
+
+dclaw does not run on Windows out of the box in beta.2.6, but the codebase now refuses to compile on Windows without the platform-specific Windows-system denylist active. `paths.DefaultDenylist` includes the following entries on Windows builds (`runtime.GOOS == "windows"`):
+
+- `C:\Windows`
+- `C:\Program Files`
+- `C:\Program Files (x86)`
+- `C:\ProgramData`
+- `C:\Users\Default`
+- `C:\Users\Public`
+- `C:\Users\All Users`
+
+The validator's existing case-insensitive `EqualFold` matching applies unchanged. Any future Windows port will inherit the denylist for free; the alternative — a Unix-only denylist with no Windows entries — would let an operator who manages to build dclaw on Windows accidentally bind `C:\Windows` into an agent container, which the validator would not catch. `--workspace-trust` does NOT bypass these entries (denylist is absolute on every OS, see Docker socket discussion above).
+
+dclaw's CI does not currently exercise a Windows build target. Treat the Windows entries as defensive scaffolding rather than a supported runtime.

@@ -605,3 +605,89 @@ func TestPolicyValidate(t *testing.T) {
 		})
 	}
 }
+
+// TestDefaultDenylistContainsWindowsEntriesOnWindows asserts that on a
+// Windows build, paths.DefaultDenylist contains the well-known
+// system-path entries (C:\Windows, C:\Program Files, etc.) appended by
+// buildDefaultDenylist's runtime.GOOS check.
+//
+// Skipped on non-Windows because the entries are deliberately absent
+// there — including them would either need case-insensitive comparison
+// against POSIX paths (false positives) or platform-specific quirks
+// that don't apply.
+func TestDefaultDenylistContainsWindowsEntriesOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skipf("Windows denylist entries only present on Windows builds; GOOS=%s", runtime.GOOS)
+	}
+	want := []string{
+		`C:\Windows`,
+		`C:\Program Files`,
+		`C:\Program Files (x86)`,
+		`C:\ProgramData`,
+		`C:\Users\Default`,
+		`C:\Users\Public`,
+		`C:\Users\All Users`,
+	}
+	for _, w := range want {
+		found := false
+		for _, e := range paths.DefaultDenylist {
+			if e == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DefaultDenylist missing Windows entry %q", w)
+		}
+	}
+}
+
+// TestPolicyValidateWindowsDenylist asserts Policy.Validate rejects the
+// Windows-system paths through the normal denylist path. The validator's
+// existing case-insensitive EqualFold + isUnderFold logic applies
+// unchanged; this test only confirms the new denylist entries land where
+// we expect.
+//
+// Skipped on non-Windows: filepath.EvalSymlinks behavior on a path like
+// `C:\Windows` is undefined on POSIX systems (the leading drive letter
+// looks like a relative path and resolves under cwd, leading to a
+// "no such file or directory" error before the denylist check fires).
+// The Windows-gated tests are scaffolding that activates when dclaw
+// gains real Windows CI; until then this skip is the expected outcome.
+func TestPolicyValidateWindowsDenylist(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skipf("Windows-path semantics required for this test; GOOS=%s", runtime.GOOS)
+	}
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"windows-system32", `C:\Windows\System32`},
+		{"program-files-foo", `C:\Program Files\Foo`},
+		{"program-files-x86-bar", `C:\Program Files (x86)\Bar`},
+		{"programdata-baz", `C:\ProgramData\Baz`},
+		{"users-default", `C:\Users\Default\AppData`},
+		{"users-public", `C:\Users\Public\Documents`},
+		{"users-all-users", `C:\Users\All Users\State`},
+	}
+	pol := paths.Policy{
+		// AllowRoot deliberately empty: each denylist entry should
+		// reject before the rel-check runs. Even with an allow-root
+		// configured, the denylist takes precedence.
+		Denylist: paths.DefaultDenylist,
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := pol.Validate(tc.input)
+			if err == nil {
+				t.Fatalf("%s: expected denylist rejection, got nil", tc.name)
+			}
+			if !errors.Is(err, paths.ErrWorkspaceForbidden) {
+				t.Fatalf("%s: expected ErrWorkspaceForbidden, got %v", tc.name, err)
+			}
+			if !strings.Contains(err.Error(), "denylist") {
+				t.Fatalf("%s: expected error to mention denylist, got %q", tc.name, err.Error())
+			}
+		})
+	}
+}

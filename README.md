@@ -64,7 +64,9 @@ make install
 dclaw is a container-native multi-agent platform. The CLI, daemon (`dclawd`),
 TUI, and workspace validator all ship together.
 
-First-time setup, then start the daemon, create an agent, and chat:
+First-time setup, then start the daemon, create an agent, and chat.
+
+State-dir defaults: macOS uses `~/.dclaw`. Linux honors XDG — if `$XDG_STATE_HOME` is set, the daemon stores state under `$XDG_STATE_HOME/dclaw`; otherwise `~/.local/state/dclaw` if that tree exists; otherwise `~/.dclaw` (the legacy default — existing installs keep working). See [`docs/workspace-root.md`](docs/workspace-root.md) Cross-platform notes for the full table.
 
 ```bash
 # One-time: configure workspace-root in a single step. Interactive prompt
