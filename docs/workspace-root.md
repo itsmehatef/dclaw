@@ -24,6 +24,42 @@ Operators who ship their own `--image=...` images alongside or instead of `dclaw
 2. **All runtime writes go to `/tmp`, `/run`, or `/workspace`.** The rootfs is `ReadonlyRootfs: true` in beta.2. `/tmp` and `/run` are tmpfs overlays (rw, `noexec,nosuid,nodev`); `/workspace` is the bind-mounted host directory. Any image that writes to `/etc`, `/opt`, `/usr`, or elsewhere on the rootfs at runtime will hit `EROFS`.
 3. **No runtime dependency on dropped capabilities.** The daemon drops `ALL` capabilities and applies `no-new-privileges` + the default seccomp profile. Images that call `mknod`, `unshare(CLONE_NEWUSER)`, raw `ptrace`, `setuid`-bit binaries, or similar privileged syscalls will fail with `EPERM` at runtime. pi-mono's happy path does not hit any of these.
 
+## config.toml schema
+
+`$DCLAW_STATE_DIR/config.toml` is the canonical operator-config file. Beta.2.5 graduated the parser to [pelletier/go-toml/v2](https://pkg.go.dev/github.com/pelletier/go-toml/v2) (replacing beta.1's homegrown one-key regex reader) and split the schema into a top-level key plus two sub-tables. Every field is optional; any unset field falls back to its default. The full shape:
+
+```toml
+# Top-level: the workspace allow-root, written by `dclaw init` or
+# `dclaw config set workspace-root <path>`. Empty / missing means
+# "not configured" — every `agent create` without --workspace-trust
+# is rejected until you set it.
+workspace-root = "/Users/alice/dclaw-agents"
+
+# [audit] tunes the audit-log rotation introduced in beta.2.3. Both
+# fields default to the audit package constants (10 MB / 5 files);
+# omit the table entirely to inherit those.
+[audit]
+max-size-bytes = 10485760   # rotation threshold in bytes (default 10 MB)
+max-files      = 5          # total files retained: audit.log + .1 .. .{N-1}
+
+# [daemon] is declared for future use. Beta.2.5 reads the table but
+# does not wire its fields to consumers — flags (--socket, --log-level)
+# still win. Pre-staging a value here today is a no-op; it activates
+# when the wiring lands.
+[daemon]
+socket    = "/run/dclaw/dclaw.sock"
+log-level = "debug"
+```
+
+Behavior summary:
+
+- **Missing config.toml** → every field zero-valued (the pre-init state).
+- **Single-key file** (just `workspace-root = "..."`, the beta.1+ shape) → workspace-root surfaces, sub-tables are zero. Existing operator configs upgrade transparently — no rewrite required.
+- **Unset `[audit].max-size-bytes` or `max-files`** → defaults from `internal/audit` (10 MB / 5 files in beta.2.3) apply. The daemon logs `audit log configured max_size=<N> max_files=<N>` at startup so operators see what's effective.
+- **`[daemon]` fields** → declared, not wired. Setting them in beta.2.5 is forward-compatible scaffolding.
+
+Re-write the file via `dclaw config set workspace-root <path>` (top-level only) or by hand-editing — the file is plain TOML and any text editor works. `dclaw config set` performs read-modify-write through `go-toml/v2`, so it preserves any `[audit]` / `[daemon]` keys you added by hand; comments, whitespace, and key ordering are NOT preserved across a `set` (the file is re-emitted by the marshaler).
+
 ## Setting it the first time
 
 The recommended path is the `dclaw init` first-run wizard:

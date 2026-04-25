@@ -80,6 +80,19 @@ func main() {
 	// the allow-root from a `dclawd --migrate-only` probe (e.g. in CI).
 	policy := buildPolicy(logger, cfg.StateDir)
 
+	// beta.2.5: resolve effective audit-rotation parameters from
+	// config.toml on top of the audit package defaults (10 MB / 5 files
+	// in beta.2.3). Computed BEFORE the --migrate-only fast-path so an
+	// operator running `dclawd --migrate-only` to dry-run the boot
+	// sequence can read the same `audit log configured` line they would
+	// see at production startup. The values are applied to the open
+	// auditLog handle further down — migrate-only does not open the file.
+	auditMaxSize, auditMaxFiles := resolveAuditConfig(logger, cfg.StateDir)
+	logger.Info("audit log configured",
+		"max_size", auditMaxSize,
+		"max_files", auditMaxFiles,
+	)
+
 	// --migrate-only: run migrations and exit. No daemon, no Docker, no socket.
 	// Invoked by `make migrate` and by operators who want to run migrations
 	// before starting the daemon (e.g. during upgrades).
@@ -105,6 +118,11 @@ func main() {
 		os.Exit(65)
 	}
 	defer auditLog.Close()
+	// beta.2.5: apply the [audit] overrides resolved up top onto the
+	// open Logger handle. Logger.MaxSize / MaxFiles are exported (per
+	// beta.2.3's deviation note), so it's a one-liner copy.
+	auditLog.MaxSize = auditMaxSize
+	auditLog.MaxFiles = auditMaxFiles
 
 	// Build context that cancels on SIGTERM/SIGINT.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -144,6 +162,37 @@ func main() {
 	}
 
 	logger.Info("dclawd stopped cleanly")
+}
+
+// resolveAuditConfig returns the effective (max_size, max_files) for the
+// audit logger after layering [audit] overrides from $stateDir/config.toml
+// on top of audit.Default{MaxSize,MaxFiles} (10 MB / 5 files in beta.2.3).
+//
+// Behavior:
+//   - Missing config.toml or unset [audit] table → defaults.
+//   - Read error → defaults; one Warn line is logged so operators see why
+//     their tuning didn't take effect.
+//   - Non-positive MaxSizeBytes or MaxFiles in the file → defaults (zero
+//     values are the "leave it alone" sentinel; deliberate disable lives
+//     behind a separate future flag, not the config file).
+//
+// Pure config + standard library, called BEFORE --migrate-only so the
+// info line shows up in dry-run boots too.
+func resolveAuditConfig(logger *slog.Logger, stateDir string) (int64, int) {
+	maxSize := audit.DefaultMaxSize
+	maxFiles := audit.DefaultMaxFiles
+	fc, err := config.ReadConfigFile(stateDir)
+	if err != nil {
+		logger.Warn("config.toml read failed; audit log will use defaults", "err", err)
+		return maxSize, maxFiles
+	}
+	if fc.Audit.MaxSizeBytes > 0 {
+		maxSize = fc.Audit.MaxSizeBytes
+	}
+	if fc.Audit.MaxFiles > 0 {
+		maxFiles = fc.Audit.MaxFiles
+	}
+	return maxSize, maxFiles
 }
 
 // buildPolicy constructs the runtime paths.Policy from the resolved config.

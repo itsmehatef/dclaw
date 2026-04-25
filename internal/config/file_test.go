@@ -52,9 +52,11 @@ func TestReadConfigFileRoundTrip(t *testing.T) {
 	}
 }
 
-// TestReadConfigFileInvalidTOML asserts the parser rejects unrecognized
-// shapes instead of silently ignoring them. This is the safety property
-// the homegrown parser owes callers.
+// TestReadConfigFileInvalidTOML asserts the parser rejects malformed
+// TOML instead of silently ignoring it. beta.2.5 delegates parsing to
+// pelletier/go-toml/v2; its error message wording differs from the
+// beta.1 homegrown reader, so the assertion looks for any non-nil
+// error rather than the specific "unrecognized shape" phrase.
 func TestReadConfigFileInvalidTOML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -66,9 +68,6 @@ func TestReadConfigFileInvalidTOML(t *testing.T) {
 	_, err := ReadConfigFile(dir)
 	if err == nil {
 		t.Fatalf("expected parse error on malformed config.toml")
-	}
-	if !strings.Contains(err.Error(), "unrecognized shape") {
-		t.Fatalf("expected 'unrecognized shape' in error, got %v", err)
 	}
 }
 
@@ -97,8 +96,10 @@ workspace-root = "/Users/alice/ws"
 
 // TestReadConfigFileInlineComment verifies an inline `# comment` after the
 // value is accepted per the TOML spec. A user hand-editing config.toml
-// with a trailing annotation must not be punished with an
-// "unrecognized shape" error.
+// with a trailing annotation must not be punished with a parse error.
+// go-toml/v2 supports inline comments natively, so this test is a
+// regression guard for the swap (the same case shipped against the
+// homegrown parser in v0.3.0-beta.1-paths-hardening.3).
 func TestReadConfigFileInlineComment(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -116,17 +117,6 @@ func TestReadConfigFileInlineComment(t *testing.T) {
 	}
 }
 
-// TestWriteConfigFileRejectsQuote verifies the grammar guard: a value
-// containing a double-quote cannot be round-tripped and must be rejected
-// at write time.
-func TestWriteConfigFileRejectsQuote(t *testing.T) {
-	dir := t.TempDir()
-	err := WriteConfigFile(dir, FileConfig{WorkspaceRoot: `/oops"embedded`})
-	if err == nil {
-		t.Fatalf("expected error on embedded double-quote")
-	}
-}
-
 // TestWriteConfigFileMode0600 verifies the file is created with mode 0600.
 func TestWriteConfigFileMode0600(t *testing.T) {
 	dir := t.TempDir()
@@ -139,5 +129,120 @@ func TestWriteConfigFileMode0600(t *testing.T) {
 	}
 	if st.Mode().Perm() != 0o600 {
 		t.Fatalf("expected mode 0600, got %v", st.Mode().Perm())
+	}
+}
+
+// TestReadConfigFileTOMLFull verifies the new structured shape: a
+// config.toml with workspace-root, [audit], and [daemon] sections is
+// parsed and every field surfaces correctly. Acts as the
+// beta.2.5-onwards happy-path round-trip.
+func TestReadConfigFileTOMLFull(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	content := `workspace-root = "/Users/alice/ws"
+
+[audit]
+max-size-bytes = 5242880
+max-files = 7
+
+[daemon]
+socket = "/tmp/dclaw-custom.sock"
+log-level = "debug"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := ReadConfigFile(dir)
+	if err != nil {
+		t.Fatalf("read full config: %v", err)
+	}
+	if cfg.WorkspaceRoot != "/Users/alice/ws" {
+		t.Fatalf("WorkspaceRoot = %q, want /Users/alice/ws", cfg.WorkspaceRoot)
+	}
+	if cfg.Audit.MaxSizeBytes != 5242880 {
+		t.Fatalf("Audit.MaxSizeBytes = %d, want 5242880", cfg.Audit.MaxSizeBytes)
+	}
+	if cfg.Audit.MaxFiles != 7 {
+		t.Fatalf("Audit.MaxFiles = %d, want 7", cfg.Audit.MaxFiles)
+	}
+	if cfg.Daemon.Socket != "/tmp/dclaw-custom.sock" {
+		t.Fatalf("Daemon.Socket = %q, want /tmp/dclaw-custom.sock", cfg.Daemon.Socket)
+	}
+	if cfg.Daemon.LogLevel != "debug" {
+		t.Fatalf("Daemon.LogLevel = %q, want debug", cfg.Daemon.LogLevel)
+	}
+}
+
+// TestReadConfigFileBackwardsCompat is the load-bearing regression guard
+// for the parser swap: any config.toml file written by beta.1 or beta.2.x
+// (single `workspace-root = "..."` line, no [audit] / [daemon] tables)
+// must continue to parse cleanly and yield zero-valued sub-structs.
+// Operators upgrading to beta.2.5 keep their existing config.toml as-is;
+// this test proves it works without rewriting the file.
+func TestReadConfigFileBackwardsCompat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	// Exact byte-for-byte shape produced by beta.1's WriteConfigFile.
+	content := `workspace-root = "/Users/legacy/dclaw-agents"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := ReadConfigFile(dir)
+	if err != nil {
+		t.Fatalf("read legacy single-key config: %v", err)
+	}
+	if cfg.WorkspaceRoot != "/Users/legacy/dclaw-agents" {
+		t.Fatalf("WorkspaceRoot = %q, want /Users/legacy/dclaw-agents", cfg.WorkspaceRoot)
+	}
+	// New sub-tables must be zero-valued — nothing was specified.
+	if cfg.Audit != (FileConfigAudit{}) {
+		t.Fatalf("Audit = %+v, want zero", cfg.Audit)
+	}
+	if cfg.Daemon != (FileConfigDaemon{}) {
+		t.Fatalf("Daemon = %+v, want zero", cfg.Daemon)
+	}
+}
+
+// TestWriteConfigFileFormat verifies the on-disk shape produced by
+// WriteConfigFile when every section is populated: the output is valid
+// TOML with `[audit]` and `[daemon]` section headers and the documented
+// kebab-case keys. Operators reading the file by hand should see exactly
+// the schema documented in docs/workspace-root.md.
+func TestWriteConfigFileFormat(t *testing.T) {
+	dir := t.TempDir()
+	cfg := FileConfig{
+		WorkspaceRoot: "/Users/alice/ws",
+		Audit:         FileConfigAudit{MaxSizeBytes: 1048576, MaxFiles: 3},
+		Daemon:        FileConfigDaemon{Socket: "/tmp/d.sock", LogLevel: "warn"},
+	}
+	if err := WriteConfigFile(dir, cfg); err != nil {
+		t.Fatalf("WriteConfigFile: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatalf("read written: %v", err)
+	}
+	got := string(body)
+	wantSubstrings := []string{
+		`workspace-root = '/Users/alice/ws'`, // go-toml/v2 prefers single quotes for plain strings
+		"[audit]",
+		"max-size-bytes = 1048576",
+		"max-files = 3",
+		"[daemon]",
+		"socket = '/tmp/d.sock'",
+		"log-level = 'warn'",
+	}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(got, s) {
+			// Tolerate either quoting style — go-toml may choose double
+			// or single depending on content. Re-check with double-quote
+			// before failing, so the test isn't brittle to library version.
+			alt := strings.ReplaceAll(s, "'", `"`)
+			if alt != s && strings.Contains(got, alt) {
+				continue
+			}
+			t.Fatalf("written config missing %q; got:\n%s", s, got)
+		}
 	}
 }
