@@ -84,6 +84,16 @@ Example line:
 {"ts":"2026-04-19T14:05:11.918Z","agent_name":"risky","raw_input":"/etc","canonical":"/etc","outcome":"forbidden","reason":"","policy_version":1}
 ```
 
+## Pre-flight diagnostics
+
+Before debugging a `workspace_forbidden` rejection by hand, run `dclaw doctor` — it prints a pass/fail breakdown of seven checks (config resolution, workspace-root configuration + validity, daemon reachability, docker reachability, agent image presence, audit-log writability) so you can tell at a glance which preflight is the actual problem. Use `dclaw doctor workspace <path>` to dry-run a candidate `--workspace` value through `Policy.Validate` without creating an agent and without writing to `audit.log` — useful for iterating on paths cheaply before committing to `dclaw agent create`.
+
+```bash
+dclaw doctor                          # full battery, exits 1 on any FAIL
+dclaw doctor -o json                  # structured output for scripts
+dclaw doctor workspace ~/dclaw/x      # pre-flight a single path
+```
+
 ## Common errors + fixes
 
 ### `workspace_forbidden: path /etc is in the system denylist`

@@ -76,6 +76,10 @@ dclaw init
 # Or set it explicitly without the wizard:
 #   dclaw config set workspace-root ~/dclaw-agents
 
+# Pre-flight diagnostics — run `dclaw doctor` if anything goes sideways.
+# Reports daemon, docker, config, image, audit-log, and workspace-root state.
+dclaw doctor
+
 # Start the background daemon.
 dclaw daemon start
 
