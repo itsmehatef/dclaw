@@ -338,3 +338,16 @@ All 23 smoke tests pass. Test 15 now exercises `--workspace-trust` legitimately 
 - Main tip: `aced98a`.
 - Latest green tag: `v0.3.0-beta.2.1-smoke-hygiene`.
 - Tag history: 11 tags total on the v0.3.0 line (alpha.1..4.1, beta.1-paths-hardening + 3 patches, beta.2-sandbox-hardening + 4 patches, beta.2.1).
+
+---
+
+## 2026-04-25 — beta.2.2 easier setup (`dclaw init`)
+
+**`v0.3.0-beta.2.2-easier-setup` (`519484b`) — clean ship.** New `dclaw init` cobra subcommand:
+- Default workspace-root: `$HOME/dclaw` (mode 0700, created on demand).
+- Idempotent — re-running prints `workspace-root already configured: <path>` without modifying config.
+- Flags: `--yes` (non-interactive), `--workspace-root <path>` (explicit override).
+- Validates the chosen path against `paths.Policy` denylist with `AllowTrust=true` so e.g. `dclaw init --workspace-root /etc` is refused even at init time.
+- TTY prompt via `mattn/go-isatty` (already a direct dep — agent flagged that the spec's `golang.org/x/term` suggestion was wrong).
+
+4 new tests (`TestInit{YesUsesDefault,WorkspaceRootFlag,Idempotent,RejectsDenylistedRoot}`) all green. README + `docs/workspace-root.md` updated to recommend `dclaw init` as first step. Diff: 4 files, +524/-4. CI: build 16s + docker-smoke 50s on tag, all green on main push too.
