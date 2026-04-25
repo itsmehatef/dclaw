@@ -76,9 +76,18 @@ func ReadConfigFile(stateDir string) (FileConfig, error) {
 }
 
 // WriteConfigFile writes cfg to $stateDir/config.toml, creating the file
-// with mode 0600 if it does not exist. Atomic: writes to a .tmp file then
-// renames. Overwrites any existing content — we currently support exactly
-// one key, so "write" means "replace".
+// with mode 0600 if it does not exist. Best-effort atomic: writes to a
+// .tmp file then renames. Overwrites any existing content — we currently
+// support exactly one key, so "write" means "replace".
+//
+// Atomicity caveat: POSIX guarantees rename(2) atomicity only when source
+// and destination live on the same filesystem. Cross-filesystem cases —
+// NFS mounts where a stale-file-handle rename can split, and certain
+// container bind-mounts where the .tmp lands on a different layer than
+// the target — may not produce an atomic replace. The state-dir is
+// almost always a single local filesystem (per docs/workspace-root.md),
+// so this caveat is documented for operators with non-standard layouts
+// rather than worked around in code.
 func WriteConfigFile(stateDir string, cfg FileConfig) error {
 	if stateDir == "" {
 		return fmt.Errorf("config: stateDir required")

@@ -215,33 +215,104 @@ echo "$T14_OUT" | grep -q '"error": *"workspace_forbidden"' \
 pass "validator rejection on /etc (exit 65 + workspace_forbidden JSON)"
 
 echo "--- Test 15: trust override via --workspace-trust ---"
-# Configure workspace-root to /tmp so the trusted path still needs trust (the
-# path lives under /tmp but we pass --workspace-trust unconditionally per spec).
-"$DCLAW_BIN" --state-dir "$SMOKE_STATE" config set workspace-root /tmp || fail "t15-config-set"
-TRUSTED_WS="/tmp/smoke-trusted-ws-$$"
-mkdir -p "$TRUSTED_WS"
-"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" agent create smoke-trusted \
-  --image=dclaw-agent:v0.1 --workspace="$TRUSTED_WS" \
-  --workspace-trust "smoke test" || fail "t15-create"
-"$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" agent describe smoke-trusted \
-  | grep -q "smoke test" \
-  || fail "Test 15 expected 'smoke test' in describe output"
-rm -rf "$TRUSTED_WS"
-pass "trust override accepted and surfaced in describe"
+# Cross-platform shape: on Darwin, /tmp canonicalizes via symlink to
+# /private/tmp which IS in the default denylist (and --workspace-trust
+# does NOT bypass denylist per validator row 28), so the legacy
+# `mkdir /tmp/smoke-trusted-ws-$$` recipe always fails on macOS local.
+# On Linux the legacy recipe was a no-op pass — the global
+# DCLAW_WORKSPACE_ROOT=/tmp put the workspace UNDER the allow-root, so
+# trust was never actually exercised. The new shape exercises trust
+# legitimately on Linux by using a narrow per-test allow-root and a
+# SIBLING workspace, then asserts both the negative (no trust → exit 65)
+# and positive (with trust → success) paths plus the "trust" audit line.
+# On Darwin we skip with a clear message — there is no portable workspace
+# location that is on a writable filesystem AND not denylisted under the
+# /private/tmp canonicalization.
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo "SKIP: Test 15 requires a non-denylisted /tmp; on macOS /tmp canonicalizes to /private/tmp which is denylisted (see docs/workspace-root.md for cross-platform notes). Run on Linux for full coverage."
+else
+  STATE_DIR_T15=$(mktemp -d -t dclaw-smoke-t15-XXXXXXXX)
+  case "$STATE_DIR_T15" in
+    /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+    *) echo "refuse: STATE_DIR_T15=$STATE_DIR_T15 outside expected prefix" >&2; exit 1;;
+  esac
+  SOCKET_T15="$STATE_DIR_T15/dclaw.sock"
+  T15_ALLOW_ROOT="$STATE_DIR_T15/allow"
+  T15_WORKSPACE="$STATE_DIR_T15/trusted-ws"
+  mkdir -p "$T15_ALLOW_ROOT" "$T15_WORKSPACE"
+  # Container uid 1000 needs to write into the workspace post-PR-C; the
+  # mktemp dir is owned by the runner user with a stricter mode.
+  chmod 0777 "$T15_WORKSPACE"
+  cleanup_t15() {
+    "$DCLAW_BIN" --state-dir "$STATE_DIR_T15" --daemon-socket "$SOCKET_T15" daemon stop >/dev/null 2>&1 || true
+    docker rm -f dclaw-smoke-trusted dclaw-smoke-trusted-no-trust >/dev/null 2>&1 || true
+    rm -rf "${STATE_DIR_T15:?refuse empty}"
+  }
+  trap cleanup_t15 EXIT
 
-echo "--- Test 16: audit.log contains forbidden + trust entries ---"
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T15" --daemon-socket "$SOCKET_T15" daemon start || fail "t15-start"
+  # Override the global DCLAW_WORKSPACE_ROOT for THIS daemon — point it at
+  # the narrow sibling so the chosen workspace is OUTSIDE the allow-root
+  # and trust is therefore required. config.toml is read at daemon
+  # startup, so we restart the daemon to pick up the new value.
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T15" --daemon-socket "$SOCKET_T15" config set workspace-root "$T15_ALLOW_ROOT" >/dev/null
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T15" --daemon-socket "$SOCKET_T15" daemon stop >/dev/null 2>&1 || true
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T15" --daemon-socket "$SOCKET_T15" daemon start || fail "t15-restart"
+
+  # Negative path: without --workspace-trust the workspace is a sibling
+  # of the allow-root and must be rejected with exit 65 (workspace_forbidden).
+  set +e
+  NEG_OUT=$("$DCLAW_BIN" -o json --state-dir "$STATE_DIR_T15" --daemon-socket "$SOCKET_T15" agent create smoke-trusted-no-trust \
+    --image=dclaw-agent:v0.1 --workspace="$T15_WORKSPACE" 2>&1)
+  NEG_EXIT=$?
+  set -e
+  if [ "$NEG_EXIT" -ne 65 ]; then
+    fail "Test 15 negative: expected exit 65 without trust, got $NEG_EXIT (output: $NEG_OUT)"
+  fi
+
+  # Positive path: with --workspace-trust the same sibling workspace
+  # passes (Rel-check skipped, denylist still enforced).
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T15" --daemon-socket "$SOCKET_T15" agent create smoke-trusted \
+    --image=dclaw-agent:v0.1 --workspace="$T15_WORKSPACE" \
+    --workspace-trust "smoke test" || fail "t15-create-with-trust"
+
+  # The trust reason must surface in describe.
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T15" --daemon-socket "$SOCKET_T15" agent describe smoke-trusted \
+    | grep -q "smoke test" \
+    || fail "Test 15: 'smoke test' reason missing from agent describe output"
+
+  # Audit log for THIS daemon must contain at least one forbidden (negative
+  # path) AND at least one trust (positive path) line. Read before cleanup
+  # tears the state-dir down.
+  T15_AUDIT_LOG="$STATE_DIR_T15/audit.log"
+  test -f "$T15_AUDIT_LOG" || fail "Test 15: $T15_AUDIT_LOG missing"
+  T15_FORBIDDEN=$(grep -c 'outcome":"forbidden"' "$T15_AUDIT_LOG" || true)
+  T15_TRUST=$(grep -c 'outcome":"trust"' "$T15_AUDIT_LOG" || true)
+  if [ "$T15_FORBIDDEN" -lt 1 ]; then
+    fail "Test 15: expected at least one outcome=forbidden audit line, got $T15_FORBIDDEN"
+  fi
+  if [ "$T15_TRUST" -lt 1 ]; then
+    fail "Test 15: expected at least one outcome=trust audit line, got $T15_TRUST"
+  fi
+
+  cleanup_t15
+  trap cleanup EXIT  # restore outer trap
+  pass "trust override accepted (negative + positive paths) and surfaced in describe + audit"
+fi
+
+echo "--- Test 16: audit.log contains forbidden entries on shared daemon ---"
+# Test 14 wrote a forbidden entry to $SMOKE_STATE/audit.log. Test 15 now
+# uses its own state-dir (per-OS skip on Darwin, per-test daemon on
+# Linux), so the trust assertion lives inside Test 15. Test 16 only
+# verifies the forbidden line from Test 14 here.
 AUDIT_LOG="$SMOKE_STATE/audit.log"
 test -f "$AUDIT_LOG" || fail "Test 16 expected $AUDIT_LOG to exist"
 FORBIDDEN_COUNT=$(grep -c 'outcome":"forbidden"' "$AUDIT_LOG" || true)
-TRUST_COUNT=$(grep -c 'outcome":"trust"' "$AUDIT_LOG" || true)
 if [ "$FORBIDDEN_COUNT" -lt 1 ]; then
   fail "Test 16 expected at least one outcome=forbidden line in $AUDIT_LOG"
 fi
-if [ "$TRUST_COUNT" -lt 1 ]; then
-  fail "Test 16 expected at least one outcome=trust line in $AUDIT_LOG"
-fi
 "$DCLAW_BIN" --state-dir "$SMOKE_STATE" --daemon-socket "$SOCKET" daemon stop >/dev/null 2>&1 || true
-pass "audit.log contains forbidden + trust entries (forbidden=$FORBIDDEN_COUNT trust=$TRUST_COUNT)"
+pass "audit.log contains forbidden entries (forbidden=$FORBIDDEN_COUNT)"
 
 # ---- SANDBOX-HARDENING TESTS (Tests 17-19, beta.2) ----
 # Each test spins up its own isolated daemon in a fresh mktemp state-dir

@@ -73,17 +73,26 @@ func HandleRPCError(cmd *cobra.Command, err error) error {
 	return nil
 }
 
+// Remediation is one entry in WorkspaceForbiddenPayload.Remediations.
+// Replaces the prior []map[string]string shape with compile-time field
+// names. JSON wire shape is byte-identical to the previous map: the JSON
+// tags ("kind", "command") emit the same keys in the same order.
+type Remediation struct {
+	Kind    string `json:"kind"`
+	Command string `json:"command"`
+}
+
 // WorkspaceForbiddenPayload is the JSON-output shape for workspace_forbidden
 // errors. Mirrors the feature_not_ready shape. "remediations" is always three
 // entries in insertion-order matching the plan.
 type WorkspaceForbiddenPayload struct {
-	Error        string                   `json:"error"`
-	Message      string                   `json:"message"`
-	ExitCode     int                      `json:"exit_code"`
-	AllowRoot    string                   `json:"allow_root"`
-	Resolved     string                   `json:"resolved"`
-	Reason       string                   `json:"reason"`
-	Remediations []map[string]string      `json:"remediations"`
+	Error        string        `json:"error"`
+	Message      string        `json:"message"`
+	ExitCode     int           `json:"exit_code"`
+	AllowRoot    string        `json:"allow_root"`
+	Resolved     string        `json:"resolved"`
+	Reason       string        `json:"reason"`
+	Remediations []Remediation `json:"remediations"`
 }
 
 // renderWorkspaceForbidden writes the structured error to stderr (or to
@@ -123,10 +132,10 @@ func renderWorkspaceForbidden(cmd *cobra.Command, rpcErr *protocol.RPCError) {
 			AllowRoot: allowRoot,
 			Resolved:  resolved,
 			Reason:    reason,
-			Remediations: []map[string]string{
-				{"kind": "use_inside_root", "command": "dclaw agent create ... --workspace <path-inside-root>"},
-				{"kind": "change_root", "command": "dclaw config set workspace-root <new-path>"},
-				{"kind": "trust_override", "command": "dclaw agent create ... --workspace-trust \"<reason>\""},
+			Remediations: []Remediation{
+				{Kind: "use_inside_root", Command: "dclaw agent create ... --workspace <path-inside-root>"},
+				{Kind: "change_root", Command: "dclaw config set workspace-root <new-path>"},
+				{Kind: "trust_override", Command: "dclaw agent create ... --workspace-trust \"<reason>\""},
 			},
 		}
 		enc := json.NewEncoder(os.Stdout)

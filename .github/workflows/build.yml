@@ -28,8 +28,12 @@ jobs:
         run: ./scripts/smoke-tui.sh
 
   docker-smoke:
-    # Integration with real docker. Only run on tag push so PRs don't flake.
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Integration with real docker. Runs on main pushes and tag pushes — PRs
+    # are skipped because dind is too slow for the inner loop. Both the
+    # beta.1 and beta.2 hotfix cascades surfaced bugs that would have been
+    # caught earlier had docker-smoke fired on every main push instead of
+    # only on tag pushes.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     services:
       docker:

@@ -4,9 +4,56 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"golang.org/x/text/unicode/norm"
 )
+
+// allowRootCache memoizes the EvalSymlinks/Abs/Clean/NFC result of every
+// AllowRoot string seen by Policy.Validate. Keyed by the raw AllowRoot the
+// caller put on the Policy struct; the value is the canonical resolution.
+// Without this cache Validate would re-run four near-syscalls per call —
+// for the daemon's typical "one Policy, many agent.create" pattern that
+// is wasted work. With it, the canonicalization runs exactly once per
+// distinct AllowRoot string for the lifetime of the process.
+//
+// Process-wide rather than per-Policy because Lifecycle copies the Policy
+// value to flip AllowTrust per-call (`policy := l.policy; policy.AllowTrust
+// = true`); a per-instance cache field would be invalidated by every copy.
+// Keying on AllowRoot is safe because the canonicalization output depends
+// only on that string and the on-disk path it resolves to — both stable
+// for the daemon's lifetime in any sane deployment.
+//
+// On EvalSymlinks failure (broken root), nothing is cached and Validate
+// falls back to per-call canonicalization which surfaces the error to
+// the caller — matching the prior behavior exactly.
+var allowRootCache sync.Map // map[string]string: AllowRoot → canonical
+
+// canonicalizeAllowRoot returns the cached canonical of allowRoot, computing
+// it on first sight. Returns ("", err) for unrecoverable failures so the
+// caller can wrap them in ErrWorkspaceForbidden as before.
+func canonicalizeAllowRoot(allowRoot string) (string, error) {
+	if v, ok := allowRootCache.Load(allowRoot); ok {
+		return v.(string), nil
+	}
+	rootNFC := norm.NFC.String(allowRoot)
+	rootAbs, err := filepath.Abs(rootNFC)
+	if err != nil {
+		return "", fmt.Errorf("abs allow-root: %v", err)
+	}
+	rootClean := filepath.Clean(rootAbs)
+	rootCanon, err := filepath.EvalSymlinks(rootClean)
+	if err != nil {
+		// Don't cache failures — the path may exist on the next call
+		// (operator running `mkdir` between calls), and a broken root
+		// is the operator's signal to fix their config; we don't want
+		// the cache to mask a fix.
+		return "", fmt.Errorf("resolve allow-root %q: %v", rootClean, err)
+	}
+	// LoadOrStore so a concurrent first-call wins atomically.
+	stored, _ := allowRootCache.LoadOrStore(allowRoot, rootCanon)
+	return stored.(string), nil
+}
 
 // PolicyVersion is the integer currently recorded in audit entries. Bump
 // any time denylist semantics change so readers can tell old vs. new
@@ -35,6 +82,11 @@ const MaxPathLen = 4096
 //   - AllowTrust, when true, bypasses the AllowRoot-prefix check but still
 //     runs every other invariant (NFC, NUL/control rejection, Clean, Rel
 //     for "no .. escape" semantics). AllowTrust does NOT bypass Denylist.
+//
+// AllowRoot canonicalization is memoized in a process-wide cache so the
+// Abs/Clean/EvalSymlinks/NFC pipeline runs exactly once per distinct
+// AllowRoot string regardless of how many times Validate is called. See
+// allowRootCache.
 type Policy struct {
 	AllowRoot  string
 	Denylist   []string
@@ -182,19 +234,14 @@ func (p Policy) Validate(raw string) (string, error) {
 		return "", fmt.Errorf("%w: no workspace-root configured — run 'dclaw config set workspace-root <path>'", ErrWorkspaceForbidden)
 	}
 
-	// Canonicalize AllowRoot too; if the operator configured the root via a
-	// symlink we want the Rel check to operate on real paths.
-	rootNFC := norm.NFC.String(p.AllowRoot)
-	rootAbs, err := filepath.Abs(rootNFC)
+	// Canonicalize AllowRoot. The result is memoized process-wide so the
+	// Abs/Clean/EvalSymlinks/NFC pipeline runs once per distinct AllowRoot
+	// string regardless of how many AgentCreate calls go through.
+	rootCanon, err := canonicalizeAllowRoot(p.AllowRoot)
 	if err != nil {
-		return "", fmt.Errorf("%w: abs allow-root: %v", ErrWorkspaceForbidden, err)
-	}
-	rootClean := filepath.Clean(rootAbs)
-	rootCanon, err := filepath.EvalSymlinks(rootClean)
-	if err != nil {
-		// If the configured root does not exist, the operator's config is
-		// broken. Surface that as forbidden rather than letting it bypass.
-		return "", fmt.Errorf("%w: resolve allow-root %q: %v", ErrWorkspaceForbidden, rootClean, err)
+		// Match the prior error wording exactly so any operator scripts
+		// grepping for "resolve allow-root" or "abs allow-root" still match.
+		return "", fmt.Errorf("%w: %s", ErrWorkspaceForbidden, err.Error())
 	}
 
 	// APFS is typically case-insensitive: EvalSymlinks returns whichever

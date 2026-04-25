@@ -3,9 +3,11 @@ package audit_test
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/itsmehatef/dclaw/internal/audit"
@@ -146,5 +148,81 @@ func TestAuditLogJSONShape(t *testing.T) {
 func TestAuditLogMissingStateDir(t *testing.T) {
 	if _, err := audit.New(""); err == nil {
 		t.Fatalf("expected error on empty state dir")
+	}
+}
+
+// TestAuditLogConcurrentWrites spawns N goroutines that each call
+// LogDecision once with a unique agent_name. After they all complete we
+// read audit.log back and assert: every record is valid NDJSON, the line
+// count equals N, and every expected agent_name (goroutine-0 through
+// goroutine-(N-1)) appears exactly once. Run under -race to catch any
+// future regression in the Logger's mutex; the combination of mutex +
+// O_APPEND + sub-PIPE_BUF record sizes is what guarantees no torn writes
+// or interleaved bytes between concurrent callers.
+func TestAuditLogConcurrentWrites(t *testing.T) {
+	const N = 20
+	dir := t.TempDir()
+	logger, err := audit.New(dir)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			name := fmt.Sprintf("goroutine-%d", idx)
+			if err := logger.LogDecision(name, "/raw", "/canon", "pass", "", 1); err != nil {
+				t.Errorf("LogDecision goroutine-%d: %v", idx, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Readback. Each line must be valid NDJSON; agent_name set must equal
+	// the expected set exactly (no duplicates, no losses).
+	f, err := os.Open(filepath.Join(dir, "audit.log"))
+	if err != nil {
+		t.Fatalf("open audit.log: %v", err)
+	}
+	defer f.Close()
+
+	seen := make(map[string]int, N)
+	lines := 0
+	scan := bufio.NewScanner(f)
+	for scan.Scan() {
+		line := scan.Text()
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		lines++
+		var rec audit.Record
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("line %d not valid JSON: %v\nline=%s", lines, err, line)
+		}
+		seen[rec.AgentName]++
+	}
+	if err := scan.Err(); err != nil {
+		t.Fatalf("scan err: %v", err)
+	}
+
+	if lines != N {
+		t.Fatalf("expected %d audit lines, got %d", N, lines)
+	}
+	for i := 0; i < N; i++ {
+		name := fmt.Sprintf("goroutine-%d", i)
+		count, ok := seen[name]
+		if !ok {
+			t.Errorf("expected agent_name %q in audit.log, missing", name)
+			continue
+		}
+		if count != 1 {
+			t.Errorf("expected agent_name %q exactly once, got %d", name, count)
+		}
 	}
 }
