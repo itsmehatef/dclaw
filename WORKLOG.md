@@ -351,3 +351,16 @@ All 23 smoke tests pass. Test 15 now exercises `--workspace-trust` legitimately 
 - TTY prompt via `mattn/go-isatty` (already a direct dep — agent flagged that the spec's `golang.org/x/term` suggestion was wrong).
 
 4 new tests (`TestInit{YesUsesDefault,WorkspaceRootFlag,Idempotent,RejectsDenylistedRoot}`) all green. README + `docs/workspace-root.md` updated to recommend `dclaw init` as first step. Diff: 4 files, +524/-4. CI: build 16s + docker-smoke 50s on tag, all green on main push too.
+
+---
+
+## 2026-04-25 — beta.2.3 audit log rotation
+
+**`v0.3.0-beta.2.3-audit-rotation` (`745a50f`) — clean ship.** Size-based rotation in `internal/audit/audit.go`:
+- Defaults: `MaxSize=10MB`, `MaxFiles=5` (exported `Logger` fields; tests override for fast cycles).
+- On write, before appending: if `currentSize + len(record)+1 > MaxSize`, rotate under the existing mutex.
+- Rename chain: `audit.log.{N-1} → audit.log.{N}` down to `audit.log → audit.log.1`. Oldest beyond `MaxFiles-1` removed.
+- Three new tests: size-trigger, ordering preserved across rotated files, defaults inspection. Existing `TestAuditLogConcurrentWrites` still green under `-race` with rotation enabled.
+- `docs/workspace-root.md` updated. Diff: 3 files, +304/-6. CI: build 20s + docker-smoke 53s on tag.
+
+Agent flagged a minor spec ambiguity around `MaxFiles=N`: I'd written "MaxFiles=3 → .1, .2, .3 exist" (4 total files), but the docs + rename-chain logic implies "MaxFiles=N total files retained". Agent reconciled to the docs reading. Either's defensible; agent picked the consistent one.
