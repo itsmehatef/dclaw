@@ -376,3 +376,15 @@ Agent flagged a minor spec ambiguity around `MaxFiles=N`: I'd written "MaxFiles=
 4 new tests; subprocess-built binary used in `TestDoctorWorkspaceForbidden` to capture exact `ExitDataErr=65` (since `go run` mangles exit codes). Local `doctorDenylist` package-var pattern mirrors init's existing approach for macOS test compatibility. Docker SDK used directly for `docker_reachable` + `agent_image_present` (internal/sandbox adapter would have needed broader changes).
 
 Diff: 4 files, +923/-0. CI: build 21s + docker-smoke 52s on tag.
+
+---
+
+## 2026-04-25 — beta.2.5 TOML config refactor
+
+**`v0.3.0-beta.2.5-toml-config` (`4eb4d29`) — clean ship.** Replaced the homegrown ~40-line regex parser with `github.com/pelletier/go-toml/v2`. `FileConfig` gains `[audit]` (max-size-bytes, max-files) and `[daemon]` (socket, log-level) sub-tables alongside `workspace-root`. `cmd/dclawd` reads the audit section at startup and overrides Logger.MaxSize/MaxFiles defaults if set.
+
+Backward compat preserved: existing single-key `config.toml` files written by beta.1+ init still parse correctly (`TestReadConfigFileBackwardsCompat`). `ReadConfigFile`/`WriteConfigFile` signatures unchanged.
+
+Agent flagged 3 minor deviations: relaxed an assertion that depended on the specific homegrown error wording, removed a `TestWriteConfigFileRejectsQuote` test that was guarding a homegrown-writer footgun no longer present, and hoisted `resolveAuditConfig` above the `--migrate-only` early-return so the audit-config info log line fires in both paths. All consistent with the spec's intent.
+
+Diff: 6 files, +289/-76. CI: build 59s + docker-smoke 1m18s on tag.
