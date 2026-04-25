@@ -307,3 +307,34 @@ Tag `v0.3.0-beta.2-sandbox-hardening` was the first end-to-end run of beta.2 pos
 - All prior `beta.2.X` plan items unchanged.
 - Add: **[meta] make `docker-smoke` run on main pushes** — pull the signal earlier than tag time. Saves the tag-spam we just went through.
 - Add: **[UX] container UID mismatch handling** — daemon could chown workspaces or let operators pick an in-container uid.
+
+---
+
+## 2026-04-25 — beta.2.1 smoke hygiene bundle
+
+**`v0.3.0-beta.2.1-smoke-hygiene` (`aced98a`) — shipped clean, no hotfix cascade.** First release since beta.1-paths-hardening to land green on the first attempt. Six items in one commit:
+
+| # | Fix | Files |
+|---|---|---|
+| 1 | smoke Test 15 macOS workspace fix — Darwin skip + Linux uses sibling-of-allow-root so trust is actually exercised (was a no-op pass before) | `scripts/smoke-daemon.sh` |
+| 2 | `TestAuditLogConcurrentWrites` under `-race` — N goroutines, mutex + `O_APPEND` proven atomic | `internal/audit/audit_test.go` |
+| 3 | Cache canonical `AllowRoot` once, not per-call. Process-wide `sync.Map` (per-Policy field would be invalidated by `policy := l.policy; policy.AllowTrust = true` copy in lifecycle) | `internal/paths/policy.go` |
+| 4 | Typed `Remediation` struct replaces `[]map[string]string` in exit.go. JSON wire-identical | `internal/cli/exit.go` |
+| 5 | `WriteConfigFile` doc comment: rename atomicity is best-effort, cross-fs (NFS) may not be | `internal/config/file.go` |
+| 6 | **CI hygiene**: `docker-smoke` now runs on `main` pushes AND tag pushes (was tag-only). Catches integration bugs pre-tag | `.github/workflows/build.yml` |
+
+Total diff: 6 files, +266/-48.
+
+**CI: both pipelines green end-to-end.**
+- Main push run: build 15s + docker-smoke 52s ✓ (FIRST main-push docker-smoke run on this repo, per the new trigger).
+- Tag push run: build 15s + docker-smoke 1m9s ✓.
+
+All 23 smoke tests pass. Test 15 now exercises `--workspace-trust` legitimately (negative-path assertion: without trust → exit 65; positive-path: with trust → success + describe shows reason). Test 16 trust assertion moved into Test 15 (necessary because new Test 15 uses its own daemon under `$STATE_DIR_T15` rather than the shared `$SMOKE_STATE` daemon).
+
+**Operational improvement realized.** The new `docker-smoke` on main trigger is the most valuable item in the bundle. Both prior phases (beta.1, beta.2) needed multi-tag hotfix cascades because docker-smoke only ran on tag pushes — so bugs surfaced post-tag, requiring a new tag per fix. With docker-smoke on every main push, future hotfix cycles should be 1 hotfix max, not 4.
+
+### Final state
+
+- Main tip: `aced98a`.
+- Latest green tag: `v0.3.0-beta.2.1-smoke-hygiene`.
+- Tag history: 11 tags total on the v0.3.0 line (alpha.1..4.1, beta.1-paths-hardening + 3 patches, beta.2-sandbox-hardening + 4 patches, beta.2.1).
