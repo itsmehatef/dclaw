@@ -67,14 +67,20 @@ TUI, and workspace validator all ship together.
 First-time setup, then start the daemon, create an agent, and chat:
 
 ```bash
-# One-time: tell dclaw which host directory is the agent-workspace root.
-dclaw config set workspace-root ~/dclaw-agents
+# One-time: configure workspace-root in a single step. Interactive prompt
+# defaults to $HOME/dclaw and creates the directory at mode 0700. Use
+# --yes to accept the default non-interactively, or --workspace-root <path>
+# to pick an explicit path.
+dclaw init
+
+# Or set it explicitly without the wizard:
+#   dclaw config set workspace-root ~/dclaw-agents
 
 # Start the background daemon.
 dclaw daemon start
 
 # Create and start an agent whose workspace sits under the allow-root.
-dclaw agent create foo --image=dclaw-agent:v0.1 --workspace=~/dclaw-agents/foo
+dclaw agent create foo --image=dclaw-agent:v0.1 --workspace=~/dclaw/foo
 dclaw agent start foo
 
 # One-shot chat round-trip.

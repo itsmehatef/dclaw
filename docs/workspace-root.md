@@ -26,11 +26,23 @@ Operators who ship their own `--image=...` images alongside or instead of `dclaw
 
 ## Setting it the first time
 
+The recommended path is the `dclaw init` first-run wizard:
+
+```bash
+dclaw init                       # interactive: defaults to $HOME/dclaw
+dclaw init --yes                 # non-interactive: accept the default
+dclaw init --workspace-root ~/dclaw-agents   # explicit path
+```
+
+`dclaw init` resolves the chosen path, runs it through the same denylist that protects `agent create` (refuses `/etc`, `/var`, the Docker socket, etc.), creates the directory at mode 0700 if missing, and writes `workspace-root = "..."` to `$DCLAW_STATE_DIR/config.toml`. Re-running `dclaw init` with `workspace-root` already set is a no-op — it prints the current value and exits 0 (idempotent).
+
+The explicit alternative remains supported and is appropriate when scripting or pointing at a path that already exists:
+
 ```bash
 dclaw config set workspace-root ~/dclaw-agents
 ```
 
-Writes `workspace-root = "/Users/<you>/dclaw-agents"` to `$DCLAW_STATE_DIR/config.toml` (mode 0600). The daemon picks it up at next `agent create`. Before the first `config set`, `workspace-root` is zero-value and every `agent create` without `--workspace-trust` returns `workspace_forbidden` with `Configured allow-root: (not configured — run 'dclaw config set workspace-root <path>')`.
+Writes `workspace-root = "/Users/<you>/dclaw-agents"` to `$DCLAW_STATE_DIR/config.toml` (mode 0600). The daemon picks it up at next `agent create`. Before the first `config set` (or `dclaw init`), `workspace-root` is zero-value and every `agent create` without `--workspace-trust` returns `workspace_forbidden` with `Configured allow-root: (not configured — run 'dclaw config set workspace-root <path>')`.
 
 ## Changing it
 
