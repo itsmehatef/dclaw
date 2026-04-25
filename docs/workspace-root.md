@@ -75,8 +75,8 @@ Pass `--workspace-trust "<non-empty reason string>"` to `dclaw agent create` to 
   - `outcome` — `"pass" | "forbidden" | "trust"`
   - `reason` — empty unless `outcome=="trust"`, in which case it's the `--workspace-trust` reason
   - `policy_version` — integer, incremented when denylist semantics change; beta.1 ships `1`
-- **Rotation:** none in beta.1. The file grows unbounded. Rotation is a documented follow-up.
-- **Retention:** keep forever in beta.1.
+- **Rotation:** size-based, in-process (added in beta.2.3). The active `audit.log` rotates when the next record would push its size past **10 MB**, after which the daemon retains the **5 most recent files**: `audit.log`, `audit.log.1`, `audit.log.2`, `audit.log.3`, `audit.log.4`. On rotation `audit.log.{N-1}` shifts to `audit.log.{N}` for N from 4 down to 1, the active `audit.log` becomes `audit.log.1`, and a fresh `audit.log` is opened with the same `O_APPEND|O_CREATE|O_SYNC` / 0600. The slot at `audit.log.4` is removed before the rename chain so the oldest cohort is dropped silently — no operator-visible error and no external tooling required. Rotation runs under the same `sync.Mutex` that serializes writes, so callers see one slightly slower `LogDecision` whenever a rotation triggers and otherwise no change; the existing concurrent-write guarantees from beta.2.1 (`TestAuditLogConcurrentWrites` under `-race`) survive intact.
+- **Retention:** the 5 most recent files only — older audit history is dropped at rotation time. If long-term retention is required, copy `audit.log*` out of `$DCLAW_STATE_DIR` on a schedule (e.g. daily) before the chain rolls over.
 
 Example line:
 
