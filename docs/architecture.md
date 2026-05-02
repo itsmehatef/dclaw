@@ -23,7 +23,7 @@ The daemon runs on the host (not in a container). It is the orchestrator and tra
 - Fleet management (start, stop, monitor agent containers)
 - Channel routing (receive messages from channel plugins, route to the correct agent)
 - Quota enforcement (token budgets, rate limits, cost tracking)
-- CLI interface (`dclaw up`, `dclaw status`, `dclaw logs`, etc.)
+- CLI interface (`dclaw init`, `dclaw doctor`, `dclaw config`, `dclaw daemon`, `dclaw agent`, `dclaw version`)
 - Web UI (planned)
 
 **What it does NOT do:**
@@ -33,7 +33,7 @@ The daemon runs on the host (not in a container). It is the orchestrator and tra
 
 ### Data Plane: Agent Containers (Node.js + pi-mono)
 
-Each agent runs inside a Docker container built on Alpine + Node.js + pi-mono. The full agent (brain + all tools) lives inside the container.
+Each agent runs inside a Docker container built on Debian (bookworm-slim) + Node.js 22 + pi-mono. The full agent (brain + all tools) lives inside the container.
 
 **What it does:**
 - Runs the complete agent loop (prompt -> LLM call -> tool execution -> response)
@@ -48,7 +48,7 @@ Each agent runs inside a Docker container built on Alpine + Node.js + pi-mono. T
 - Resource limits (CPU, memory, via Docker cgroup controls)
 
 **Container image:**
-- Base: Alpine Linux + Node.js
+- Base: Debian (bookworm-slim) + Node.js 22
 - Agent SDK: `@mariozechner/pi-coding-agent` from pi-mono
 - Image size: ~200-300MB
 - Built from `agent/Dockerfile`
@@ -127,14 +127,30 @@ OpenClaw's codebase serves as a reference implementation for:
 - Channel adapter patterns (`extensions/discord/`)
 - Sandbox integration patterns (`src/agents/sandbox/`)
 
-## Build Phases
+## Reality so far (as of v0.3.0-beta.2.6)
+
+What actually shipped diverged from the original 4-phase roadmap below — the path here was alpha.1-4 for the daemon/TUI/chat surface, then a paths-hardening + sandbox-hardening pivot driven by the 2026-04-18 wipe RCA. The summary, from oldest to newest:
+
+- **alpha.1 → alpha.4** (pre-wipe): TUI + JSON-RPC daemon + agent containers + multi-turn chat (`dclaw agent chat`) + streaming output. Foundation surface for the platform.
+- **alpha.4.1** (2026-04-18): final pre-wipe tag at `76405ac`; everything past this on the dev machine was lost in the OS reimage. See WORKLOG entry "2026-04-19 — Post-wipe RCA".
+- **beta.1-paths-hardening** (2026-04-22): `--workspace` validator package (`internal/paths/`), denylist + allow-root + symlink-resolve + NFC + APFS case-fold, `--workspace-trust=<reason>` escape hatch, `internal/audit` NDJSON log, `internal/config/resolve.go` consolidation, `--state-dir` flag, `dclaw config get|set workspace-root`, smoke tests 14-16.
+- **beta.2-sandbox-hardening** (2026-04-24, .4 green after 4 hotfixes): container posture — `CapDrop: ALL`, `no-new-privileges`, Docker default seccomp (auto-applied), `ReadonlyRootfs: true` + tmpfs `/tmp` + `/run`, `User: 1000:1000`, `PidsLimit: 256`, docker.sock denylist; smoke tests 17-23.
+- **beta.2.1 — beta.2.6** (2026-04-25, 6 patches in a clean-ship streak): smoke hygiene + `docker-smoke` on main (.1); `dclaw init` first-run wizard (.2); audit log size-rotation (.3); `dclaw doctor` health-check (.4); `pelletier/go-toml/v2` config refactor with `[audit]` and `[daemon]` sub-tables (.5); XDG-aware state dir on Linux + Windows denylist scaffolding (.6).
+
+CLI surface today: `dclaw init`, `dclaw doctor`, `dclaw config get|set`, `dclaw daemon start|stop|status`, `dclaw agent create|list|describe|start|stop|delete|chat`, `dclaw version`, plus the bare-`dclaw` interactive TUI. There is no `dclaw up`, `dclaw upgrade`, or `dclaw rollback` yet — those were aspirational verbs in the original Phase 3 roadmap below.
+
+See [`../WORKLOG.md`](../WORKLOG.md) for the full ship history (commit hashes, diff sizes, hotfix narratives), and `docs/phase-3-beta1-paths-hardening-plan.md` + `docs/phase-3-beta2-sandbox-hardening-plan.md` for the per-phase plan docs.
+
+## Original roadmap (historical, written 2026-04-XX before reality diverged)
+
+The four-phase plan below was the pre-beta intent. Reality diverged into alpha.1-4 + beta.1/beta.2 hardening pivots after the 2026-04-18 wipe RCA surfaced the unvalidated `--workspace` arg and the unhardened container posture. Kept here as historical context — the live state is in "Reality so far" above.
 
 ### Phase 1: One Agent in a Container (Weeks 1-3)
 
 **Goal:** Prove that pi-mono works inside a Docker container with full tool sandboxing.
 
 **Deliverables:**
-- `agent/Dockerfile`: Alpine + Node.js + `@mariozechner/pi-coding-agent`
+- `agent/Dockerfile`: Debian (bookworm-slim) + Node.js 22 + `@mariozechner/pi-coding-agent`
 - Thin wrapper script that starts the agent with a system prompt
 - Run command: `docker run -e ANTHROPIC_API_KEY=... -v $(pwd):/workspace dclaw-agent:dev "prompt"`
 
@@ -158,8 +174,8 @@ OpenClaw's codebase serves as a reference implementation for:
 
 **Goal:** Make dclaw operable and configurable for real deployments.
 
-**Deliverables:**
-- dclaw CLI (`up`, `status`, `logs`, `upgrade`, `rollback`)
+**Deliverables (aspirational — not all shipped, see "Reality so far"):**
+- dclaw CLI verbs originally planned: `up`, `status`, `logs`, `upgrade`, `rollback`. Actual shipped surface: `init`, `doctor`, `config`, `daemon`, `agent`, `version`.
 - `fleet.yaml` declarative configuration
 - Plugin versioning conventions
 - Documentation site

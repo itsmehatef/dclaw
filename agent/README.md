@@ -1,4 +1,4 @@
-# dclaw-agent (Phase 1)
+# dclaw-agent
 
 A Docker container that runs pi-mono's coding agent. Supports two modes:
 persistent (default) for `dclaw` chat/exec dispatch, and one-shot for direct
@@ -41,7 +41,7 @@ docker run --rm \
   node /app/run.mjs "your prompt here"
 ```
 
-The agent can read, write, edit, and run bash commands inside the container. It cannot see anything outside `/workspace` except the container's own rootfs. It can reach the Anthropic API but nothing else (in Phase 1; firewall allowlist is Phase 2).
+The agent can read, write, edit, and run bash commands inside the container. It cannot see anything outside `/workspace` except the container's own rootfs. It can reach the Anthropic API but nothing else. Per-agent network egress allowlist exists on the wire protocol but is not yet enforced — see "Still open" below.
 
 ## Smoke test
 
@@ -67,7 +67,7 @@ Fully wired:
 - Multi-turn chat via `dclaw agent chat` (alpha.3).
 - Streaming output (alpha.3).
 - Workspace bind-mount at `/workspace` (phase-1 baseline).
-- Daemon-enforced container posture (beta.2): `CapDrop: ALL`, `no-new-privileges`, `seccomp=default`, `ReadonlyRootfs: true` with `/tmp` + `/run` tmpfs, `User: 1000:1000`, `PidsLimit: 256`, docker.sock denylist.
+- Daemon-enforced container posture (beta.2): `CapDrop: ALL`, `no-new-privileges`, Docker default seccomp (auto-applied; not pinned), `ReadonlyRootfs: true` with `/tmp` + `/run` tmpfs, `User: 1000:1000`, `PidsLimit: 256`, docker.sock denylist.
 
 Still open:
 

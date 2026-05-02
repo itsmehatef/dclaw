@@ -8,7 +8,7 @@
 
 ## 0. Status
 
-**SHIPPED (2026-04-24) as `v0.3.0-beta.2-sandbox-hardening`.** Closed on origin at tag; see `WORKLOG.md` for the ship notes.
+**SHIPPED (2026-04-24) as `v0.3.0-beta.2-sandbox-hardening.4`** — initial tag plus 4 hotfixes; the `.0`/`.1`/`.2`/`.3` tags are red historical markers retained for archeology, see `WORKLOG.md` "Hotfix cascade" table for the `.1`-`.4` sequence and the `.4` clean-ship notes.
 
 **Commits (on `main`, in order):**
 
@@ -18,6 +18,25 @@
 | `a137e05` | beta.2(B): ReadonlyRootfs + tmpfs overlays |
 | `2c35a7a` | beta.2(C): non-root UID enforcement (1000:1000) + run.mjs uid-0 guard |
 | `827896c` | beta.2(D): docker.sock denylist + full posture probe + legacyScan warning |
+| `f979ad3` | hotfix `.1`: drop invalid `seccomp=default` SecurityOpt entry (Docker rejects the literal; default profile auto-applies when `seccomp=` is unset) |
+| `3afa4b6` | hotfix `.2`: Test 19 PidsLimit assertion accepts kernel fork-refusal as equivalent proof when `jobs \| wc -l` cannot run |
+| `f1c3065` | hotfix `.3`: Test 20 chmod the test workspace before `agent start` so non-1000 CI-runner uids don't trip DAC denial post-CAP_DAC_OVERRIDE drop |
+| `e7ec8c0` | hotfix `.4`: Test 23 NoNewPrivs probe reads `/proc/self/status` directly instead of `[ -u /tmp/x ]` (kernel-flag check, not chmod-bit observation) |
+
+### Patch series (beta.2.X)
+
+After `.4` shipped green, the 6 follow-ups filed in §0 above (renumbered as `beta.2.1`..`beta.2.6`) all landed in 2026-04-25 as a 5-clean-ship streak. Theme + main commit per tag:
+
+| Tag | Theme | Main commit |
+|---|---|---|
+| `v0.3.0-beta.2.1-smoke-hygiene` | Test 15 macOS workspace fix + 4 polish items + `docker-smoke` on main pushes | `aced98a` |
+| `v0.3.0-beta.2.2-easier-setup` | `dclaw init` first-run wizard (default `$HOME/dclaw`, `--yes`, `--workspace-root`) | `519484b` |
+| `v0.3.0-beta.2.3-audit-rotation` | Audit log size-rotation (10MB / 5 files default; `[audit]` TOML keys) | `745a50f` |
+| `v0.3.0-beta.2.4-doctor` | `dclaw doctor` 7-check health-check + `dclaw doctor workspace <path>` pre-flight | `646b3a4` |
+| `v0.3.0-beta.2.5-toml-config` | `pelletier/go-toml/v2` refactor; `[audit]` + `[daemon]` sub-tables | `4eb4d29` |
+| `v0.3.0-beta.2.6-platform-port` | XDG state-dir on Linux + Windows denylist scaffolding | `fe69729` |
+
+See `WORKLOG.md` "beta.2.X series complete" entry for diff sizes, deviations, and per-patch CI signal.
 
 | Field | Value |
 |---|---|

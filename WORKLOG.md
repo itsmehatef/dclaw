@@ -2,6 +2,14 @@
 
 Reverse-chronological log of what happened and what we did, session by session. Redundant to plans by design — plans look forward, this log looks backward and survives machine loss if pushed.
 
+## Reading this file
+
+- **What dclaw is:** see [`README.md`](README.md). This file is the change log; the README is the orientation.
+- **Order:** entries are dated and run *chronological* — oldest at the top, newest at the bottom. The current state is at the bottom of the file.
+- **Latest entry:** scroll to the bottom (currently "2026-04-25 — beta.2.X series complete"). The "Final state" subsection of each entry gives main-tip + latest-tag at that moment.
+- **Versioning convention:** `v0.3.0-beta.X` (e.g. `beta.1`, `beta.2`) is a phase release with a multi-PR plan doc under `docs/phase-3-betaX-NAME-plan.md`. `v0.3.0-beta.X.Y` (e.g. `beta.2.6`) is a patch release on top of that phase — smaller scope, often bundling natural-affinity items in a single commit. Hotfix tags use trailing `.N` on a phase tag (e.g. `beta.2-sandbox-hardening.4` = 4 hotfixes on top of the initial beta.2 tag).
+- **Plan docs:** every phase has a paired plan doc in `docs/`; patch releases don't (they reference the phase plan's §0 follow-ups list).
+
 ---
 
 ## 2026-04-19 — Post-wipe RCA + paths-hardening plan

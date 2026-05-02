@@ -1,6 +1,6 @@
 # dclaw fleet configuration — example
-# Phase 2+ concept. The daemon that reads this config is not yet implemented.
-# Ships as part of Phase 2 alongside cmd/dclaw/main.go and internal/daemon/.
+# fleet.yaml format is aspirational — the daemon (shipped in v0.3.0-beta.2.6)
+# does not yet read it. CLI-driven `dclaw agent create` is the real surface today.
 
 version: 1
 
@@ -12,11 +12,11 @@ main_agent:
   # Host directory bind-mounted as the agent's workspace (read/write).
   workspace: "./workspace"
   # Channel plugins the main agent talks to. Each is an independently
-  # versioned container (Phase 2+). Not yet available.
+  # versioned container. Not yet wired through the daemon as of beta.2.6.
   channels:
     - plugin: "discord"
       version: "1.0.0"
-  # Outbound network allowlist enforced via per-container iptables (Phase 2+).
+  # Outbound network allowlist — declared on the wire protocol but not yet enforced.
   egress_allowlist:
     - "api.anthropic.com"
     - "api.github.com"

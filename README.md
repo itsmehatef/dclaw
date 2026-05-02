@@ -13,7 +13,7 @@ dclaw is a container-native multi-agent platform. Each AI agent runs inside a li
 The agent runtime is powered by [pi-mono](https://github.com/badlogic/pi-mono) (`@mariozechner/pi-coding-agent`, MIT, 34.6k stars) — the same TypeScript agent SDK that OpenClaw builds on. dclaw does NOT rewrite the agentic loop. It wraps pi-mono with mandatory sandboxing, fleet management, and channel plugins.
 
 - **Sandboxing is mandatory, not optional** — every agent (brain + tools) runs inside a Docker container. Scoped filesystem, scoped network (iptables allowlist), scoped resources. Nothing escapes the sandbox. There is no `sandbox.mode: "off"`.
-- **Container-native agent runtime** — Alpine + Node.js + pi-mono (~200-300MB). The full agent (LLM calls + tool execution) runs inside the container.
+- **Container-native agent runtime** — Debian (bookworm-slim) + Node.js 22 + pi-mono (~200-300MB). The full agent (LLM calls + tool execution) runs inside the container.
 - **Control plane + data plane split** — the `dclaw` daemon manages containers and routes messages (control plane). Agent containers make API calls and execute tools (data plane).
 - **Independently versioned channel plugins** — upgrade Discord without touching Slack, roll back WhatsApp without affecting anything else
 - **Main agent + ephemeral workers** — one always-on agent, spawns scoped worker containers per task
@@ -43,7 +43,7 @@ dclaw/
 └── README.md
 ```
 
-## Building the CLI and Daemon (v0.3.0-beta.2-sandbox-hardening)
+## Building the CLI and Daemon (v0.3.0-beta.2.6-platform-port)
 
 Requires Go 1.25+.
 
@@ -56,7 +56,7 @@ make install
 
 # Check the build
 ./bin/dclaw version
-# dclaw version 0.3.0-beta.2-sandbox-hardening (commit abc1234, built 2026-04-24T...Z, go1.25.x)
+# dclaw version 0.3.0-beta.2.6-platform-port (commit abc1234, built 2026-05-01T...Z, go1.25.x)
 ```
 
 ### Running
@@ -86,12 +86,26 @@ dclaw doctor
 dclaw daemon start
 
 # Create and start an agent whose workspace sits under the allow-root.
-dclaw agent create foo --image=dclaw-agent:v0.1 --workspace=~/dclaw/foo
+# Note: bash does NOT expand ~ inside --workspace=, so use $HOME for absolute paths.
+dclaw agent create foo --image=dclaw-agent:v0.1 --workspace="$HOME/dclaw/foo"
 dclaw agent start foo
 
 # One-shot chat round-trip.
 dclaw agent chat foo --one-shot "hello"
+
+# See all commands: dclaw --help
 ```
+
+### All commands
+
+Major verbs at a glance:
+
+- `dclaw init` — first-run wizard; prompts for `workspace-root` (defaults to `$HOME/dclaw`) and writes `config.toml`.
+- `dclaw doctor` — pre-flight diagnostics across config, daemon, docker, image, audit-log, and workspace-root.
+- `dclaw config get|set workspace-root` — read/write the workspace allow-root in `config.toml`.
+- `dclaw daemon start|stop|status` — manage the background `dclawd` process.
+- `dclaw agent create|list|describe|start|stop|delete|chat` — full agent lifecycle.
+- `dclaw version` — print build version, commit, build time, Go toolchain.
 
 Run bare `dclaw` (no subcommand) to enter the interactive TUI.
 
@@ -107,14 +121,25 @@ escape hatch, and the append-only audit-log format.
 
 - **dclaw daemon (control plane)**: Go — fleet management, channel routing, quota enforcement, CLI
 - **Agent runtime (data plane)**: pi-mono (`@mariozechner/pi-coding-agent`, TypeScript) — runs inside containers
-- **Agent containers**: Alpine + Node.js + pi-mono (~200-300MB) — sandboxed execution environment
+- **Agent containers**: Debian (bookworm-slim) + Node.js 22 + pi-mono (~200-300MB) — sandboxed execution environment
 - **Web dashboard**: TypeScript (planned)
 - **Channel plugins**: Any language — independently versioned containers, JSON-RPC over Unix sockets
 - **Wire protocol**: JSON-RPC 2.0 over Unix domain sockets
 
 ## Status
 
-Early development — v0.3.0-beta.2-sandbox-hardening: container posture hardened (cap drop, seccomp, ReadonlyRootfs, non-root UID, docker.sock denylist) on top of paths-hardening.
+Early development — v0.3.0-beta.2.6-platform-port: paths-hardening + container posture + first-run UX + audit rotation + doctor + TOML config + cross-platform scaffolding shipped. See [WORKLOG.md](WORKLOG.md) for the full release history.
+
+## Security posture
+
+dclaw layers two enforcement boundaries — workspace path validation (host side) and container posture (sandbox side) — plus an append-only audit log over both. Each item below has a runbook entry under `docs/` if you need the operational detail.
+
+- **Workspace path validation** (beta.1): a hard-coded denylist of system paths (`/`, `/etc`, `/usr`, `/var`, `/private/tmp`, `/Library`, `/Applications`, `/opt/homebrew`, plus `C:\Windows`/`Program Files`/`ProgramData` on Windows builds) is checked first; then a `filepath.Rel`-based containment check against `workspace-root` (set via `dclaw config set workspace-root <path>` or `dclaw init`). The `--workspace-trust=<reason>` escape hatch bypasses the allow-root check (NOT the denylist), persists per-agent in `state.db`, and writes an `outcome=trust` audit record.
+- **Container posture** (beta.2): every agent container runs with `CapDrop: ALL`, `SecurityOpt: no-new-privileges`, Docker's default seccomp profile (auto-applied — not pinned, see beta.2 plan §11 Q2 for why), `ReadonlyRootfs: true` with tmpfs overlays at `/tmp` (64m noexec) and `/run` (8m noexec), `User: 1000:1000`, `PidsLimit: 256`. The Docker control socket is denylisted as a workspace target across all three common locations (Linux `/var/run/docker.sock`, systemd `/run/docker.sock`, Docker Desktop on macOS).
+- **Audit log**: every workspace decision is logged to `$STATE_DIR/audit.log` as NDJSON. The file is opened `O_APPEND|O_CREATE|O_SYNC` at mode 0600, mutex-serialized, and size-rotated (10MB threshold / 5 files retained by default; tunable in `config.toml`'s `[audit]` table).
+- **Not yet enforced** (beta.3+): per-agent network egress allowlist (`EgressAllowlist` exists on the protocol but isn't wired through), custom seccomp profile (tighter than Docker's default), per-agent memory + CPU limits, agent image security rebase. Kernel-level CVEs (Dirty Pipe etc.) are explicitly out of scope — keep the host kernel patched.
+
+See [docs/architecture.md](docs/architecture.md) §"Threat Model" and [docs/workspace-root.md](docs/workspace-root.md) for the full operational matrix.
 
 ## License
 

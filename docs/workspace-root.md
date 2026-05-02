@@ -1,4 +1,4 @@
-# workspace-root runbook (beta.1-paths-hardening)
+# workspace-root runbook (through beta.2.6)
 
 Operational guide for the workspace-path validator shipped in beta.1-paths-hardening. Covers what `workspace-root` is, how to set/change it, the `--workspace-trust` escape hatch, the audit log, canonical errors with fixes, and backup-restore notes for pre-wipe SQLite snapshots.
 
@@ -138,7 +138,7 @@ The path (or its canonical resolution) matches a hard-coded denylist entry. The 
 
 ```bash
 # Option A: pick a path inside the allow-root
-dclaw agent create <name> --workspace ~/dclaw-agents/<subdir> --image=<image>
+dclaw agent create <name> --workspace="$HOME/dclaw-agents/<subdir>" --image=<image>
 
 # Option B: if the path truly must be outside the allow-root, pick a path that is
 #           NOT on the denylist (the denylist covers system paths only)
