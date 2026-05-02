@@ -488,3 +488,38 @@ dclaw daemon now ships with:
 - Latest green tag: `v0.3.0-beta.2.6-platform-port`.
 - 5-clean-ship streak. No outstanding red CI.
 - Total tag count on v0.3.0 line: 19 (alpha.1..4.1 + beta.1 phase + 3 patches + beta.2 phase + 4 patches + 6 beta.2.X patches).
+
+---
+
+## 2026-05-01 — cold-handoff readiness sweep + beta.3 plan available
+
+Pre-handoff audit + docs-fix + beta.3 architect, all in one session. No code changes; documentation only. Goal: a fresh contributor (human or agent) can land on this repo with zero prior context and orient correctly.
+
+### Cold-handoff docs sweep — `15f7b91`
+
+Read-only audit found 1 BLOCKER + 8 IMPORTANTs + 6 MINORs across `README.md`, `agent/README.md`, `docs/architecture.md`, `docs/workspace-root.md`, `docs/phase-3-beta2-sandbox-hardening-plan.md`, `configs/`, and `WORKLOG.md`. All 15 closed in one commit (8 files, +182/-23):
+
+- **BLOCKER**: README example `--workspace=~/dclaw/foo` — `~` doesn't expand inside `--workspace=` arg in bash; copy-paste hit `workspace_forbidden`. Replaced with `$HOME/...` form. Same fix in `docs/workspace-root.md`.
+- **IMPORTANT**: README header/status/version-output bumped from `v0.3.0-beta.2-sandbox-hardening` to `v0.3.0-beta.2.6-platform-port` (was one beta behind reality).
+- **IMPORTANT**: Agent base image was incorrectly described as "Alpine" in README + architecture.md; actual image is Debian (bookworm-slim). Three fixes.
+- **IMPORTANT**: beta.2 plan §0 SHIPPED line now references the green `.4` tag (was `.0`, the red initial tag); added the 4 hotfix commits + the 6 beta.2.X patch tags to the §0 commits table.
+- **IMPORTANT**: `docs/architecture.md` "Build Phases" section was the original 4-phase week-1-24 roadmap with references to nonexistent CLI verbs (`dclaw up`, `dclaw upgrade`, `dclaw rollback`). Rewrote as "Reality so far" + retained "Original roadmap (historical)" subsection.
+- **IMPORTANT**: `agent/README.md` "Phase 1" nomenclature dropped; "Known limitations (v0.1)" rewritten to current state. README gained a `dclaw doctor`/`dclaw config` listing.
+- **IMPORTANT**: WORKLOG.md gained a top-of-file orientation preamble for cold readers.
+- **IMPORTANT (net-new docs)**: `CONTRIBUTING.md` (~91 lines) covering versioning convention, per-phase loop, per-patch loop, plan-doc shape, CI shape, smoke-test layout, how to ship a release. README gained a "Security posture" section summarizing paths + container posture + audit log + not-yet-enforced items at-a-glance.
+- **MINOR**: `agent/README.md` "seccomp=default" claim corrected to "Docker default seccomp (auto-applied; not pinned)" reflecting beta.2 hotfix `f979ad3`. `docs/workspace-root.md` title scope dropped. `configs/fleet.example.yaml` "Phase 2+" comment refreshed.
+
+### beta.3 wipe-recovery plan — `docs/phase-3-beta3-wipe-recovery-plan.md`
+
+Architect produced the formal plan. 14-section structure mirroring beta.1/beta.2 templates. Re-derives the three pieces of original beta.1 product content lost in the 2026-04-18 wipe: logs view (PR-A), toasts (PR-B), chat history persistence (PR-C), with a Phase-0 prerequisite (migration `0003_chat_history.sql` + protocol types + repo methods, re-deriving the lost `d84554d` commit) and a PR-D cleanup. Sequencing: Phase0 → A → (B serial-then-C per beta.1 race lesson) → D. Estimated ~+2200 lines across 5 PRs.
+
+Key locked decisions in the plan: `agent.logs.stream` RPC name + `agent.log.line` notification mirrors alpha.3's chat precedent; `MaxLogLines=5000` FIFO bound; `ToastDuration=3s`/`ToastMaxStack=3`; `ChatHistoryList Limit=0` means "all" per Q2; new error code `ErrChatHistoryUnavailable=-32008`; wire-protocol version stays at v1 (additive only).
+
+Three open questions deferred to Hatef: PR-B/C parallel vs serial (recommended: serial, per the beta.1 race lesson); `dclaw agent logs --stream` operator-facing in beta.3 or hidden-for-smoke-only (recommended: hidden); new TUI vs old daemon — graceful degradation vs hard error (recommended: silent degradation, fall back to alpha.1 polling for logs).
+
+### Final state
+
+- Main tip: post-cold-handoff sweep + beta.3 plan commit (this entry's commit).
+- Latest green tag still: `v0.3.0-beta.2.6-platform-port`.
+- No code changes since beta.2.6; this session was 100% docs.
+- beta.3 ready to start when Hatef green-lights the plan.
