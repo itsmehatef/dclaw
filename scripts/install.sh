@@ -166,7 +166,7 @@ run "$INSTALL_BIN_DIR/dclawd" --version
 
 if (( BUILD_AGENT_IMAGE )); then
   log "Building agent image $AGENT_TAG"
-  run env DCLAW_AGENT_TAG="$AGENT_TAG" "$ROOT_DIR/agent/build.sh"
+  run env DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-1}" DCLAW_AGENT_TAG="$AGENT_TAG" "$ROOT_DIR/agent/build.sh"
 else
   log "Skipping agent image build"
 fi

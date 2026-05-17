@@ -4,11 +4,12 @@
 // official API client.
 //
 // Flags:
-//   --socket <path>   Override the socket path (default: $XDG_RUNTIME_DIR/dclaw.sock).
-//   --state-dir <d>   Override the state directory (default: ~/.dclaw).
-//   --log-level lvl   debug|info|warn|error (default: info).
-//   --foreground      Stay in the foreground; don't detach. Default when run from dclaw daemon start.
-//   --migrate-only    Run pending SQLite migrations and exit 0. Used by `make migrate`.
+//
+//	--socket <path>   Override the socket path (default: $XDG_RUNTIME_DIR/dclaw.sock).
+//	--state-dir <d>   Override the state directory (default: ~/.dclaw).
+//	--log-level lvl   debug|info|warn|error (default: info).
+//	--foreground      Stay in the foreground; don't detach. Default when run from dclaw daemon start.
+//	--migrate-only    Run pending SQLite migrations and exit 0. Used by `make migrate`.
 package main
 
 import (
@@ -19,7 +20,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"os/user"
 	"syscall"
 
 	"github.com/itsmehatef/dclaw/internal/audit"
@@ -196,8 +196,8 @@ func resolveAuditConfig(logger *slog.Logger, stateDir string) (int64, int) {
 }
 
 // buildPolicy constructs the runtime paths.Policy from the resolved config.
-// Starts from paths.DefaultDenylist and appends the daemon user's $HOME so
-// a workspace pointing at the operator's home dir directly is refused.
+// Starts from paths.DefaultDenylist; the allow-root check is responsible for
+// constraining normal user-home workspaces such as $HOME/dclaw.
 // On config read failure we log but keep going with an empty AllowRoot —
 // the validator will then reject every non-trust path with the "not
 // configured" message, which is the desired fail-closed behavior.
@@ -208,9 +208,6 @@ func resolveAuditConfig(logger *slog.Logger, stateDir string) (int64, int) {
 // mutating the on-disk config.toml.
 func buildPolicy(logger *slog.Logger, stateDir string) paths.Policy {
 	dl := append([]string(nil), paths.DefaultDenylist...)
-	if u, err := user.Current(); err == nil && u.HomeDir != "" {
-		dl = append(dl, u.HomeDir)
-	}
 
 	fc, err := config.ReadConfigFile(stateDir)
 	if err != nil {

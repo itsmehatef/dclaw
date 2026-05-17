@@ -45,27 +45,49 @@ dclaw/
 
 ## Quick Start (Fresh Machine)
 
-Prereqs:
+On Linux, `scripts/bootstrap-linux.sh` installs OS prerequisites first, then
+runs the source installer. It currently supports Fedora/RHEL-like,
+Debian/Ubuntu-like, Arch/Manjaro-like, and openSUSE-like systems.
 
-- Go 1.25+
-- `make`
-- Docker running locally
-- `git`
+If `git` is not installed yet, install it with your distro package manager
+first. Examples:
+
+```bash
+# Fedora / RHEL-like
+sudo dnf install -y git
+
+# Debian / Ubuntu-like
+sudo apt-get update
+sudo apt-get install -y git
+```
 
 Install from a source checkout:
 
 ```bash
 git clone https://github.com/itsmehatef/dclaw.git
 cd dclaw
-scripts/install.sh
+scripts/bootstrap-linux.sh --start-daemon
 ```
 
-The installer:
+The Linux bootstrap:
 
+- installs Go, `make`, Git, and a Docker Engine-compatible daemon/CLI with Buildx
+- starts Docker when a supported service manager is available
+- uses rootless Docker on OrbStack Linux machines when the distro package
+  provides Docker's rootless setup tool, exporting the rootless `DOCKER_HOST`
+  for the install run
 - builds and installs `dclaw` + `dclawd` to `$HOME/.local/bin`
 - builds the local `dclaw-agent:v0.1` Docker image
 - runs `dclaw init --yes --workspace-root "$HOME/dclaw"`
 - runs `dclaw doctor`
+
+If the bootstrap adds your user to the `docker` group, refresh your shell group
+membership and rerun the dclaw install step:
+
+```bash
+newgrp docker
+scripts/install.sh --start-daemon
+```
 
 If `$HOME/.local/bin` is not on your `PATH`, add it:
 
@@ -73,10 +95,9 @@ If `$HOME/.local/bin` is not on your `PATH`, add it:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Then start the daemon and create a first agent:
+Then create a first agent:
 
 ```bash
-dclaw daemon start
 dclaw doctor
 
 # Optional, but required for real LLM chat.
@@ -89,8 +110,10 @@ dclaw agent chat foo --one-shot "hello"
 ```
 
 Run bare `dclaw` to open the interactive TUI. See [INSTALL.md](INSTALL.md)
-for installer options such as `--bin-dir`, `--workspace-root`,
-`--skip-agent-image`, and `--start-daemon`.
+for Linux bootstrap and source-installer options.
+
+On non-Linux systems, install Go 1.25+, `make`, Git, and Docker manually, then
+run `scripts/install.sh`.
 
 ## Manual Build
 

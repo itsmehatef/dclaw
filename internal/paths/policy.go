@@ -96,9 +96,7 @@ type Policy struct {
 
 // DefaultDenylist is the canonical macOS + common Unix list of paths that
 // must never be used as an agent workspace, plus a Windows-system block
-// that activates only when the current binary is Windows. Callers assemble
-// the daemon's runtime Denylist by appending the daemon user's $HOME
-// (resolved at startup via config.Resolve).
+// that activates only when the current binary is Windows.
 //
 // The docker.sock entries (beta.2 PR-D) close the "Trojan workspace"
 // escape where an operator accidentally binds the Docker control socket
@@ -137,7 +135,6 @@ var defaultUnixDenylist = []string{
 	"/var",
 	"/bin",
 	"/sbin",
-	"/home",
 	"/root",
 	"/private/etc",
 	"/private/var",

@@ -22,6 +22,8 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"github.com/itsmehatef/dclaw/internal/dockerctx"
 )
 
 // Container posture constants (beta.2-sandbox-hardening). Held as
@@ -141,9 +143,11 @@ type CreateSpec struct {
 	Workspace string
 }
 
-// NewDockerClient connects to the docker daemon using default env resolution.
+// NewDockerClient connects to the docker daemon using env resolution plus the
+// current Docker CLI context when DOCKER_HOST is unset.
 // Returns an error if the socket is unreachable.
 func NewDockerClient() (*DockerClient, error) {
+	dockerctx.ApplyCurrentContextHost(context.Background())
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("docker client: %w", err)

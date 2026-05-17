@@ -16,6 +16,7 @@ import (
 
 	"github.com/itsmehatef/dclaw/internal/client"
 	"github.com/itsmehatef/dclaw/internal/config"
+	"github.com/itsmehatef/dclaw/internal/dockerctx"
 	"github.com/itsmehatef/dclaw/internal/paths"
 )
 
@@ -350,8 +351,9 @@ func checkDaemonReachable(parent context.Context) CheckResult {
 
 // ---------- check 5: docker_reachable ----------
 
-// checkDockerReachable opens a Docker SDK client with FromEnv
-// resolution and pings it. WARNs (not FAILs) on failure: docker may
+// checkDockerReachable opens a Docker SDK client with env resolution plus the
+// current Docker CLI context when DOCKER_HOST is unset, then pings it.
+// WARNs (not FAILs) on failure: docker may
 // be intentionally not running on dev hosts where the operator is
 // only working on the daemon/CLI. Uses a 3s timeout to keep doctor
 // snappy on hosts where the docker socket exists but is unresponsive.
@@ -359,6 +361,7 @@ func checkDockerReachable(parent context.Context) CheckResult {
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 
+	dockerctx.ApplyCurrentContextHost(ctx)
 	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
 		return CheckResult{
@@ -400,6 +403,7 @@ func checkAgentImagePresent(parent context.Context) CheckResult {
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 
+	dockerctx.ApplyCurrentContextHost(ctx)
 	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
 		return CheckResult{
