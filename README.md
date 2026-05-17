@@ -47,6 +47,16 @@ dclaw/
 
 Requires Go 1.25+.
 
+For a fresh machine, use the source installer:
+
+```bash
+scripts/install.sh
+```
+
+It builds and installs `dclaw` + `dclawd`, builds `dclaw-agent:v0.1`, runs
+`dclaw init`, and finishes with `dclaw doctor`. See [INSTALL.md](INSTALL.md)
+for options such as `--bin-dir`, `--workspace-root`, and `--start-daemon`.
+
 ```bash
 # Build the binary into ./bin/dclaw
 make build
