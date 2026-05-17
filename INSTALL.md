@@ -77,10 +77,15 @@ Start the daemon and create a first agent:
 
 ```bash
 dclaw daemon start
+mkdir -p "$HOME/dclaw/foo"
 dclaw agent create foo --image=dclaw-agent:v0.1 --workspace="$HOME/dclaw/foo"
 dclaw agent start foo
 dclaw agent chat foo --one-shot "hello"
 ```
+
+Set `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN` before `agent create` if
+you want real LLM chat. dclaw automatically inherits those two keys into the
+agent environment when they are present.
 
 Note: bash does not expand `~` inside `--workspace=...`; use `$HOME/...` or an
 absolute path.

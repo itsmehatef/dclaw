@@ -230,6 +230,7 @@ fi
 
 cat <<EOF
   dclaw doctor
+  mkdir -p "$CONFIGURED_WORKSPACE_ROOT/foo"
   dclaw agent create foo --image="$AGENT_TAG" --workspace="$CONFIGURED_WORKSPACE_ROOT/foo"
   dclaw agent start foo
   dclaw agent chat foo --one-shot "hello"

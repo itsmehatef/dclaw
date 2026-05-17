@@ -43,19 +43,56 @@ dclaw/
 └── README.md
 ```
 
-## Building the CLI and Daemon (v0.3.0-beta.2.6-platform-port)
+## Quick Start (Fresh Machine)
 
-Requires Go 1.25+.
+Prereqs:
 
-For a fresh machine, use the source installer:
+- Go 1.25+
+- `make`
+- Docker running locally
+- `git`
+
+Install from a source checkout:
 
 ```bash
+git clone https://github.com/itsmehatef/dclaw.git
+cd dclaw
 scripts/install.sh
 ```
 
-It builds and installs `dclaw` + `dclawd`, builds `dclaw-agent:v0.1`, runs
-`dclaw init`, and finishes with `dclaw doctor`. See [INSTALL.md](INSTALL.md)
-for options such as `--bin-dir`, `--workspace-root`, and `--start-daemon`.
+The installer:
+
+- builds and installs `dclaw` + `dclawd` to `$HOME/.local/bin`
+- builds the local `dclaw-agent:v0.1` Docker image
+- runs `dclaw init --yes --workspace-root "$HOME/dclaw"`
+- runs `dclaw doctor`
+
+If `$HOME/.local/bin` is not on your `PATH`, add it:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Then start the daemon and create a first agent:
+
+```bash
+dclaw daemon start
+dclaw doctor
+
+# Optional, but required for real LLM chat.
+export ANTHROPIC_API_KEY="<your Anthropic API key>"
+
+mkdir -p "$HOME/dclaw/foo"
+dclaw agent create foo --image=dclaw-agent:v0.1 --workspace="$HOME/dclaw/foo"
+dclaw agent start foo
+dclaw agent chat foo --one-shot "hello"
+```
+
+Run bare `dclaw` to open the interactive TUI. See [INSTALL.md](INSTALL.md)
+for installer options such as `--bin-dir`, `--workspace-root`,
+`--skip-agent-image`, and `--start-daemon`.
+
+## Manual Build
 
 ```bash
 # Build the binary into ./bin/dclaw
@@ -69,12 +106,12 @@ make install
 # dclaw version 0.3.0-beta.2.6-platform-port (commit abc1234, built 2026-05-01T...Z, go1.25.x)
 ```
 
-### Running
+### Manual First Run
 
 dclaw is a container-native multi-agent platform. The CLI, daemon (`dclawd`),
 TUI, and workspace validator all ship together.
 
-First-time setup, then start the daemon, create an agent, and chat.
+If you did not use `scripts/install.sh`, run setup manually:
 
 State-dir defaults: macOS uses `~/.dclaw`. Linux honors XDG — if `$XDG_STATE_HOME` is set, the daemon stores state under `$XDG_STATE_HOME/dclaw`; otherwise `~/.local/state/dclaw` if that tree exists; otherwise `~/.dclaw` (the legacy default — existing installs keep working). See [`docs/workspace-root.md`](docs/workspace-root.md) Cross-platform notes for the full table.
 
@@ -88,15 +125,16 @@ dclaw init
 # Or set it explicitly without the wizard:
 #   dclaw config set workspace-root ~/dclaw-agents
 
-# Pre-flight diagnostics — run `dclaw doctor` if anything goes sideways.
-# Reports daemon, docker, config, image, audit-log, and workspace-root state.
-dclaw doctor
-
 # Start the background daemon.
 dclaw daemon start
 
+# Pre-flight diagnostics.
+# Reports daemon, docker, config, image, audit-log, and workspace-root state.
+dclaw doctor
+
 # Create and start an agent whose workspace sits under the allow-root.
 # Note: bash does NOT expand ~ inside --workspace=, so use $HOME for absolute paths.
+mkdir -p "$HOME/dclaw/foo"
 dclaw agent create foo --image=dclaw-agent:v0.1 --workspace="$HOME/dclaw/foo"
 dclaw agent start foo
 
