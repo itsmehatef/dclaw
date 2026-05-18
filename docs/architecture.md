@@ -127,17 +127,26 @@ OpenClaw's codebase serves as a reference implementation for:
 - Channel adapter patterns (`extensions/discord/`)
 - Sandbox integration patterns (`src/agents/sandbox/`)
 
-## Reality so far (as of v0.3.0-beta.2.6)
+## Reality so far (as of v0.3.0-beta.3)
 
-What actually shipped diverged from the original 4-phase roadmap below — the path here was alpha.1-4 for the daemon/TUI/chat surface, then a paths-hardening + sandbox-hardening pivot driven by the 2026-04-18 wipe RCA. The summary, from oldest to newest:
+What actually shipped diverged from the original 4-phase roadmap below — the path here was alpha.1-4 for the daemon/TUI/chat surface, then a paths-hardening + sandbox-hardening pivot driven by the 2026-04-18 wipe RCA, then beta.3 re-derived the product work lost in that wipe. The summary, from oldest to newest:
 
 - **alpha.1 → alpha.4** (pre-wipe): TUI + JSON-RPC daemon + agent containers + multi-turn chat (`dclaw agent chat`) + streaming output. Foundation surface for the platform.
 - **alpha.4.1** (2026-04-18): final pre-wipe tag at `76405ac`; everything past this on the dev machine was lost in the OS reimage. See WORKLOG entry "2026-04-19 — Post-wipe RCA".
 - **beta.1-paths-hardening** (2026-04-22): `--workspace` validator package (`internal/paths/`), denylist + allow-root + symlink-resolve + NFC + APFS case-fold, `--workspace-trust=<reason>` escape hatch, `internal/audit` NDJSON log, `internal/config/resolve.go` consolidation, `--state-dir` flag, `dclaw config get|set workspace-root`, smoke tests 14-16.
 - **beta.2-sandbox-hardening** (2026-04-24, .4 green after 4 hotfixes): container posture — `CapDrop: ALL`, `no-new-privileges`, Docker default seccomp (auto-applied), `ReadonlyRootfs: true` + tmpfs `/tmp` + `/run`, `User: 1000:1000`, `PidsLimit: 256`, docker.sock denylist; smoke tests 17-23.
 - **beta.2.1 — beta.2.6** (2026-04-25, 6 patches in a clean-ship streak): smoke hygiene + `docker-smoke` on main (.1); `dclaw init` first-run wizard (.2); audit log size-rotation (.3); `dclaw doctor` health-check (.4); `pelletier/go-toml/v2` config refactor with `[audit]` and `[daemon]` sub-tables (.5); XDG-aware state dir on Linux + Windows denylist scaffolding (.6).
+- **beta.2.7-linux-bootstrap** (2026-05-17): fresh Linux bootstrap/source installer path plus OrbStack/rootless-Docker handling, tagged at `e30c50b`.
+- **beta.3-wipe-recovery** (2026-05-18): re-derived the lost beta.1 product content — TUI live logs (`ViewLogs` + `agent.logs.stream`), bottom-right toast notifications, and SQLite-backed per-agent chat history loaded on every chat open. Smoke tests now cover the logs stream as Test 24 and chat-history smoke as Test 25 when an Anthropic key is present.
 
-CLI surface today: `dclaw init`, `dclaw doctor`, `dclaw config get|set`, `dclaw daemon start|stop|status`, `dclaw agent create|list|describe|start|stop|delete|chat`, `dclaw version`, plus the bare-`dclaw` interactive TUI. There is no `dclaw up`, `dclaw upgrade`, or `dclaw rollback` yet — those were aspirational verbs in the original Phase 3 roadmap below.
+CLI surface today: `dclaw init`, `dclaw doctor`, `dclaw config get|set`, `dclaw daemon start|stop|status`, `dclaw agent create|list|describe|start|stop|delete|logs|chat`, `dclaw agent chat history <name>`, `dclaw version`, plus the bare-`dclaw` interactive TUI. There is no `dclaw up`, `dclaw upgrade`, or `dclaw rollback` yet — those were aspirational verbs in the original Phase 3 roadmap below.
+
+Additive beta.3 RPC surface, still on `protocol.Version == 1`:
+
+- `agent.logs.stream` request followed by `agent.log.line` notifications, terminated by `agent.log.done` or `agent.log.error`.
+- `agent.chat.history.list` returns persisted `protocol.ChatMessage` rows for one agent.
+- `agent.chat.history.append` appends one validated history row for daemon/internal tooling.
+- `ErrChatHistoryUnavailable = -32008` reports storage/migration failures without changing the JSON-RPC envelope.
 
 See [`../WORKLOG.md`](../WORKLOG.md) for the full ship history (commit hashes, diff sizes, hotfix narratives), and `docs/phase-3-beta1-paths-hardening-plan.md` + `docs/phase-3-beta2-sandbox-hardening-plan.md` for the per-phase plan docs.
 

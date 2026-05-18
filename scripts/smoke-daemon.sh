@@ -23,7 +23,7 @@ case "$SMOKE_STATE" in
   *) echo "refuse: SMOKE_STATE=$SMOKE_STATE outside expected prefix" >&2; exit 1;;
 esac
 
-SMOKE_AGENT_NAMES=(smoke-daemon smoke-dup smoke-chatbot smoke-chatbot13 smoke-trusted)
+SMOKE_AGENT_NAMES=(smoke-daemon smoke-dup smoke-chatbot smoke-chatbot13 smoke-trusted smoke-logs-stream smoke-history)
 
 wipe_smoke_containers() {
   for name in "${SMOKE_AGENT_NAMES[@]}"; do
@@ -673,5 +673,75 @@ fi
 cleanup_t23
 trap cleanup EXIT
 pass "full beta.2 posture probe (all 6 dimensions enforced)"
+
+echo "--- Test 24: agent logs stream — TUI-shape RPC delivers lines ---"
+STATE_DIR_T24=$(mktemp -d -t dclaw-smoke-t24-XXXXXXXX)
+case "$STATE_DIR_T24" in
+  /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+  *) echo "refuse: STATE_DIR_T24=$STATE_DIR_T24 outside expected prefix" >&2; exit 1;;
+esac
+SOCKET_T24="$STATE_DIR_T24/dclaw.sock"
+cleanup_t24() {
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T24" --daemon-socket "$SOCKET_T24" daemon stop >/dev/null 2>&1 || true
+  docker rm -f dclaw-smoke-logs-stream >/dev/null 2>&1 || true
+  rm -rf "${STATE_DIR_T24:?refuse empty}"
+}
+trap cleanup_t24 EXIT
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T24" --daemon-socket "$SOCKET_T24" daemon start || fail "t24-start"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T24" --daemon-socket "$SOCKET_T24" agent create smoke-logs-stream \
+  --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T24" || fail "t24-create"
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T24" --daemon-socket "$SOCKET_T24" agent start smoke-logs-stream || fail "t24-start-agent"
+# Docker logs capture PID 1 stdout, not normal docker-exec stdout. Write the
+# probe line directly to PID 1's stdout so agent.logs.stream can receive it.
+"$DCLAW_BIN" --state-dir "$STATE_DIR_T24" --daemon-socket "$SOCKET_T24" agent exec smoke-logs-stream \
+  -- sh -c 'echo T24_PROBE_OK > /proc/1/fd/1' >/dev/null || fail "t24-exec"
+set +e
+T24_OUT=$(timeout 8 "$DCLAW_BIN" --state-dir "$STATE_DIR_T24" --daemon-socket "$SOCKET_T24" agent logs --stream smoke-logs-stream 2>&1)
+T24_EXIT=$?
+set -e
+# timeout exits 124; accept it because the log stream intentionally follows.
+if [ "$T24_EXIT" -ne 0 ] && [ "$T24_EXIT" -ne 124 ]; then
+  fail "Test 24: agent logs --stream errored unexpectedly: exit=$T24_EXIT, output: $T24_OUT"
+fi
+echo "$T24_OUT" | grep -q "T24_PROBE_OK" \
+  || fail "Test 24: expected T24_PROBE_OK in streamed logs, got: $T24_OUT"
+cleanup_t24
+trap cleanup EXIT
+pass "agent.logs.stream RPC delivers stdout lines"
+
+echo "--- Test 25: chat history persistence — round-trip + reload (requires ANTHROPIC_API_KEY) ---"
+if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${ANTHROPIC_OAUTH_TOKEN:-}" ]; then
+  echo "SKIP: Test 25 requires ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN — skipping (set the var to enable)"
+else
+  STATE_DIR_T25=$(mktemp -d -t dclaw-smoke-t25-XXXXXXXX)
+  case "$STATE_DIR_T25" in
+    /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
+    *) echo "refuse: STATE_DIR_T25=$STATE_DIR_T25 outside expected prefix" >&2; exit 1;;
+  esac
+  SOCKET_T25="$STATE_DIR_T25/dclaw.sock"
+  cleanup_t25() {
+    "$DCLAW_BIN" --state-dir "$STATE_DIR_T25" --daemon-socket "$SOCKET_T25" daemon stop >/dev/null 2>&1 || true
+    docker rm -f dclaw-smoke-history >/dev/null 2>&1 || true
+    rm -rf "${STATE_DIR_T25:?refuse empty}"
+  }
+  trap cleanup_t25 EXIT
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T25" --daemon-socket "$SOCKET_T25" daemon start || fail "t25-start"
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T25" --daemon-socket "$SOCKET_T25" agent create smoke-history \
+    --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T25" || fail "t25-create"
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T25" --daemon-socket "$SOCKET_T25" agent start smoke-history || fail "t25-agent-start"
+  "$DCLAW_BIN" --state-dir "$STATE_DIR_T25" --daemon-socket "$SOCKET_T25" agent chat smoke-history \
+    --one-shot "reply with only the word: T25_HISTORY_OK" \
+    --timeout 90s >/dev/null || fail "t25-chat"
+  HIST=$("$DCLAW_BIN" -o json --state-dir "$STATE_DIR_T25" --daemon-socket "$SOCKET_T25" agent chat history smoke-history 2>&1) || fail "t25-history-cmd"
+  echo "$HIST" | grep -q '"role": *"user"' \
+    || fail "Test 25: expected user history row, got: $HIST"
+  echo "$HIST" | grep -q '"role": *"agent"' \
+    || fail "Test 25: expected agent history row, got: $HIST"
+  echo "$HIST" | grep -q 'T25_HISTORY_OK' \
+    || fail "Test 25: expected T25_HISTORY_OK in persisted history, got: $HIST"
+  cleanup_t25
+  trap cleanup EXIT
+  pass "chat history persisted across round-trip + reload"
+fi
 
 echo "All daemon smoke tests passed."

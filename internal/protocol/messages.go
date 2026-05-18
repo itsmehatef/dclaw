@@ -39,13 +39,14 @@ const (
 	ErrInternal       = -32603
 
 	// dclaw custom
-	ErrAgentNotFound       = -32001 // reused semantic: "worker not found" in spec; dclaw v0.3 means agent
-	ErrAgentNotRunning     = -32002
-	ErrQuotaExceeded       = -32003
-	ErrSpawnFailed         = -32004
-	ErrTimeout             = -32005
-	ErrChannelNotReady     = -32006
-	ErrWorkspaceForbidden  = -32007 // beta.1-paths-hardening: workspace path rejected by policy
+	ErrAgentNotFound          = -32001 // reused semantic: "worker not found" in spec; dclaw v0.3 means agent
+	ErrAgentNotRunning        = -32002
+	ErrQuotaExceeded          = -32003
+	ErrSpawnFailed            = -32004
+	ErrTimeout                = -32005
+	ErrChannelNotReady        = -32006
+	ErrWorkspaceForbidden     = -32007 // beta.1-paths-hardening: workspace path rejected by policy
+	ErrChatHistoryUnavailable = -32008 // beta.3-wipe-recovery: chat history persistence failed or unavailable
 )
 
 // ---------- Handshake ----------
@@ -75,17 +76,17 @@ type AckResult struct {
 
 // Agent is the wire projection of an agent record.
 type Agent struct {
-	ID                    string            `json:"id"`
-	Name                  string            `json:"name"`
-	Image                 string            `json:"image"`
-	Status                string            `json:"status"`
-	ContainerID           string            `json:"container_id,omitempty"`
-	Workspace             string            `json:"workspace,omitempty"`
-	WorkspaceTrustReason  string            `json:"workspace_trust_reason,omitempty"` // beta.1: operator-supplied reason when workspace bypasses allow-root policy
-	Env                   map[string]string `json:"env,omitempty"`
-	Labels                map[string]string `json:"labels,omitempty"`
-	CreatedAt             int64             `json:"created_at"`
-	UpdatedAt             int64             `json:"updated_at"`
+	ID                   string            `json:"id"`
+	Name                 string            `json:"name"`
+	Image                string            `json:"image"`
+	Status               string            `json:"status"`
+	ContainerID          string            `json:"container_id,omitempty"`
+	Workspace            string            `json:"workspace,omitempty"`
+	WorkspaceTrustReason string            `json:"workspace_trust_reason,omitempty"` // beta.1: operator-supplied reason when workspace bypasses allow-root policy
+	Env                  map[string]string `json:"env,omitempty"`
+	Labels               map[string]string `json:"labels,omitempty"`
+	CreatedAt            int64             `json:"created_at"`
+	UpdatedAt            int64             `json:"updated_at"`
 }
 
 // Channel is the wire projection of a channel record.
@@ -302,11 +303,11 @@ type WorkerGetStatus struct {
 
 // WorkerStatusResult is the response for `worker.get_status`.
 type WorkerStatusResult struct {
-	Status          string  `json:"status"`
-	ExitCode        *int    `json:"exit_code"`
-	StartedAt       string  `json:"started_at"`
-	ElapsedSeconds  float64 `json:"elapsed_seconds"`
-	CostUSD         float64 `json:"cost_usd"`
+	Status         string  `json:"status"`
+	ExitCode       *int    `json:"exit_code"`
+	StartedAt      string  `json:"started_at"`
+	ElapsedSeconds float64 `json:"elapsed_seconds"`
+	CostUSD        float64 `json:"cost_usd"`
 }
 
 // WorkerListParams is the payload for `worker.list`.
@@ -433,8 +434,8 @@ type WorkerKillSignal struct {
 type AgentChatSendParams struct {
 	Name      string `json:"name"`
 	Content   string `json:"content"`
-	ParentID  string `json:"parent_id,omitempty"`
-	MessageID string `json:"message_id,omitempty"`
+	ParentID  string `json:"parent_id"`
+	MessageID string `json:"message_id"`
 }
 
 // AgentChatSendResult is the synchronous ack returned before any chunks are
@@ -451,9 +452,77 @@ type AgentChatSendResult struct {
 // Sequence is monotonically increasing from 0 within a single send.
 type AgentChatChunkNotification struct {
 	Name      string `json:"name"`
-	Role      string `json:"role"`      // "agent" | "system" | "error"
-	Text      string `json:"text"`      // delta text for this chunk
+	Role      string `json:"role"` // "agent" | "system" | "error"
+	Text      string `json:"text"` // delta text for this chunk
 	Sequence  int    `json:"sequence"`
 	Final     bool   `json:"final"`
 	MessageID string `json:"message_id,omitempty"`
 }
+
+// ---------- agent.logs.stream / chat history (Boundary 4, beta.3) ----------
+
+// LogsStreamParams is the request body for `agent.logs.stream`.
+// Tail follows Docker's log-tail convention: 0 means all available log lines.
+type LogsStreamParams struct {
+	Name   string `json:"name"`
+	Tail   int    `json:"tail,omitempty"`
+	Follow bool   `json:"follow,omitempty"`
+}
+
+// LogsStreamLineNotification is the payload of an `agent.log.line`
+// notification sent on an agent.logs.stream connection.
+type LogsStreamLineNotification struct {
+	Name      string `json:"name"`
+	Line      string `json:"line"`
+	Stream    string `json:"stream"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+// LogsStreamErrorNotification is the terminal error notification for an
+// already-acked agent.logs.stream request.
+type LogsStreamErrorNotification struct {
+	Name      string `json:"name"`
+	Error     string `json:"error"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+// LogsStreamDoneNotification marks clean completion of an agent.logs.stream.
+type LogsStreamDoneNotification struct {
+	Name      string `json:"name"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+// ChatMessage is the wire projection of one persisted chat-history row.
+type ChatMessage struct {
+	MessageID string `json:"message_id"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	ParentID  string `json:"parent_id"`
+	Sequence  int    `json:"sequence"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+// ChatHistoryListParams is the request body for `agent.chat.history.list`.
+// Limit 0 means all messages.
+type ChatHistoryListParams struct {
+	Name  string `json:"name"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+// ChatHistoryListResult is the response for `agent.chat.history.list`.
+type ChatHistoryListResult struct {
+	Messages []ChatMessage `json:"messages"`
+}
+
+// ChatHistoryAppendParams is the request body for `agent.chat.history.append`.
+type ChatHistoryAppendParams struct {
+	Name      string `json:"name"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	ParentID  string `json:"parent_id,omitempty"`
+	MessageID string `json:"message_id"`
+	Sequence  int    `json:"sequence"`
+}
+
+// ChatHistoryAppendResult aliases AckResult for a typed RPC response name.
+type ChatHistoryAppendResult = AckResult

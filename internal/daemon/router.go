@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/itsmehatef/dclaw/internal/audit"
 	"github.com/itsmehatef/dclaw/internal/paths"
@@ -24,6 +25,7 @@ type Router struct {
 	lifecycle   *Lifecycle
 	handlers    map[string]handlerFunc
 	chatHandler *ChatHandler // streaming handler for agent.chat.send
+	logHandler  *LogStreamHandler
 }
 
 type handlerFunc func(ctx context.Context, params json.RawMessage) (any, *protocol.RPCError)
@@ -46,17 +48,19 @@ func NewRouter(log *slog.Logger, repo *store.Repo, docker *sandbox.DockerClient,
 		"daemon.version": r.handleDaemonVersion,
 
 		// Agent CRUD
-		"agent.create":   r.handleAgentCreate,
-		"agent.list":     r.handleAgentList,
-		"agent.get":      r.handleAgentGet,
-		"agent.describe": r.handleAgentDescribe,
-		"agent.update":   r.handleAgentUpdate,
-		"agent.delete":   r.handleAgentDelete,
-		"agent.start":    r.handleAgentStart,
-		"agent.stop":     r.handleAgentStop,
-		"agent.restart":  r.handleAgentRestart,
-		"agent.logs":     r.handleAgentLogs,
-		"agent.exec":     r.handleAgentExec,
+		"agent.create":              r.handleAgentCreate,
+		"agent.list":                r.handleAgentList,
+		"agent.get":                 r.handleAgentGet,
+		"agent.describe":            r.handleAgentDescribe,
+		"agent.update":              r.handleAgentUpdate,
+		"agent.delete":              r.handleAgentDelete,
+		"agent.start":               r.handleAgentStart,
+		"agent.stop":                r.handleAgentStop,
+		"agent.restart":             r.handleAgentRestart,
+		"agent.logs":                r.handleAgentLogs,
+		"agent.exec":                r.handleAgentExec,
+		"agent.chat.history.list":   r.handleChatHistoryList,
+		"agent.chat.history.append": r.handleChatHistoryAppend,
 
 		// Channel CRUD (record-only in v0.3)
 		"channel.create": r.handleChannelCreate,
@@ -68,6 +72,7 @@ func NewRouter(log *slog.Logger, repo *store.Repo, docker *sandbox.DockerClient,
 	}
 
 	r.chatHandler = NewChatHandler(log, repo, docker)
+	r.logHandler = NewLogStreamHandler(log, repo, docker)
 
 	return r
 }
@@ -88,6 +93,12 @@ func (r *Router) Dispatch(ctx context.Context, env *protocol.Envelope, send func
 	if env.Method == "agent.chat.send" {
 		if err := r.chatHandler.Handle(ctx, env.Params, env.ID, send); err != nil {
 			r.log.Warn("chat handler error", "err", err)
+		}
+		return nil
+	}
+	if env.Method == "agent.logs.stream" {
+		if err := r.logHandler.Handle(ctx, env.Params, env.ID, send); err != nil {
+			r.log.Warn("logs handler error", "err", err)
 		}
 		return nil
 	}
@@ -276,6 +287,81 @@ func (r *Router) handleAgentExec(ctx context.Context, params json.RawMessage) (a
 		return nil, mapError(err)
 	}
 	return res, nil
+}
+
+func (r *Router) handleChatHistoryList(ctx context.Context, params json.RawMessage) (any, *protocol.RPCError) {
+	var req protocol.ChatHistoryListParams
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, &protocol.RPCError{Code: protocol.ErrInvalidParams, Message: err.Error()}
+	}
+	rec, err := r.repo.GetAgent(ctx, req.Name)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	rows, err := r.repo.ListChatHistory(ctx, rec.ID, req.Limit)
+	if err != nil {
+		return nil, &protocol.RPCError{Code: protocol.ErrChatHistoryUnavailable, Message: err.Error()}
+	}
+	messages := make([]protocol.ChatMessage, 0, len(rows))
+	for _, row := range rows {
+		messages = append(messages, protocol.ChatMessage{
+			MessageID: row.MessageID,
+			Role:      row.Role,
+			Content:   row.Content,
+			ParentID:  row.ParentID,
+			Sequence:  row.Sequence,
+			Timestamp: row.Timestamp,
+		})
+	}
+	return protocol.ChatHistoryListResult{Messages: messages}, nil
+}
+
+func (r *Router) handleChatHistoryAppend(ctx context.Context, params json.RawMessage) (any, *protocol.RPCError) {
+	var req protocol.ChatHistoryAppendParams
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, &protocol.RPCError{Code: protocol.ErrInvalidParams, Message: err.Error()}
+	}
+	if req.Name == "" {
+		return nil, &protocol.RPCError{Code: protocol.ErrInvalidParams, Message: "name required"}
+	}
+	if !validChatHistoryRole(req.Role) {
+		return nil, &protocol.RPCError{Code: protocol.ErrInvalidParams, Message: "role must be one of user, agent, system, error"}
+	}
+	if req.Content == "" {
+		return nil, &protocol.RPCError{Code: protocol.ErrInvalidParams, Message: "content required"}
+	}
+	if req.MessageID == "" {
+		return nil, &protocol.RPCError{Code: protocol.ErrInvalidParams, Message: "message_id required"}
+	}
+	rec, err := r.repo.GetAgent(ctx, req.Name)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	if err := r.repo.InsertChatMessage(ctx, store.ChatMessageRecord{
+		ID:        store.NewID(),
+		AgentID:   rec.ID,
+		Role:      req.Role,
+		Content:   req.Content,
+		ParentID:  req.ParentID,
+		MessageID: req.MessageID,
+		Sequence:  req.Sequence,
+		Timestamp: time.Now().Unix(),
+	}); err != nil {
+		if errors.Is(err, store.ErrNameTaken) {
+			return nil, &protocol.RPCError{Code: protocol.ErrInvalidParams, Message: err.Error()}
+		}
+		return nil, &protocol.RPCError{Code: protocol.ErrChatHistoryUnavailable, Message: err.Error()}
+	}
+	return protocol.ChatHistoryAppendResult{Ack: true}, nil
+}
+
+func validChatHistoryRole(role string) bool {
+	switch role {
+	case "user", "agent", "system", "error":
+		return true
+	default:
+		return false
+	}
 }
 
 // ---------- channel.* ----------

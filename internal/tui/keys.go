@@ -10,6 +10,7 @@ type KeyMap struct {
 	Back     key.Binding
 	Describe key.Binding
 	Chat     key.Binding // alpha.3: open chat view
+	Logs     key.Binding // beta.3: open live logs view
 	Refresh  key.Binding
 	Help     key.Binding
 	Quit     key.Binding
@@ -24,6 +25,7 @@ func DefaultKeys() KeyMap {
 		Back:     key.NewBinding(key.WithKeys("esc", "backspace"), key.WithHelp("esc", "back")),
 		Describe: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "describe")),
 		Chat:     key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "chat")),
+		Logs:     key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "logs")),
 		Refresh:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
 		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
@@ -32,7 +34,7 @@ func DefaultKeys() KeyMap {
 
 // ShortHelp returns the abbreviated help row.
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Enter, k.Back, k.Describe, k.Chat, k.Refresh, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Enter, k.Back, k.Describe, k.Chat, k.Logs, k.Refresh, k.Help, k.Quit}
 }
 
 // FullHelp returns all bindings in one row.

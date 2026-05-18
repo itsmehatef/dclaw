@@ -107,10 +107,13 @@ mkdir -p "$HOME/dclaw/foo"
 dclaw agent create foo --image=dclaw-agent:v0.1 --workspace="$HOME/dclaw/foo"
 dclaw agent start foo
 dclaw agent chat foo --one-shot "hello"
+dclaw agent chat history foo
 ```
 
-Run bare `dclaw` to open the interactive TUI. See [INSTALL.md](INSTALL.md)
-for Linux bootstrap and source-installer options.
+Run bare `dclaw` to open the interactive TUI. Press `c` to chat with the
+selected agent, `l` to live-tail its logs, and `t` to dismiss transient
+notifications. See [INSTALL.md](INSTALL.md) for Linux bootstrap and
+source-installer options.
 
 On non-Linux systems, install Go 1.25+, `make`, Git, and Docker manually, then
 run `scripts/install.sh`.
@@ -126,7 +129,7 @@ make install
 
 # Check the build
 ./bin/dclaw version
-# dclaw version 0.3.0-beta.2.6-platform-port (commit abc1234, built 2026-05-01T...Z, go1.25.x)
+# dclaw version 0.3.0-beta.3-wipe-recovery (commit abc1234, built 2026-05-18T...Z, go1.25.x)
 ```
 
 ### Manual First Run
@@ -164,6 +167,9 @@ dclaw agent start foo
 # One-shot chat round-trip.
 dclaw agent chat foo --one-shot "hello"
 
+# Show persisted per-agent chat history.
+dclaw agent chat history foo
+
 # See all commands: dclaw --help
 ```
 
@@ -175,10 +181,12 @@ Major verbs at a glance:
 - `dclaw doctor` — pre-flight diagnostics across config, daemon, docker, image, audit-log, and workspace-root.
 - `dclaw config get|set workspace-root` — read/write the workspace allow-root in `config.toml`.
 - `dclaw daemon start|stop|status` — manage the background `dclawd` process.
-- `dclaw agent create|list|describe|start|stop|delete|chat` — full agent lifecycle.
+- `dclaw agent create|list|describe|start|stop|delete|logs|chat` — full agent lifecycle, logs, and chat.
+- `dclaw agent chat history <name>` — print persisted per-agent chat history; use `-o json` for machine-readable output.
 - `dclaw version` — print build version, commit, build time, Go toolchain.
 
-Run bare `dclaw` (no subcommand) to enter the interactive TUI.
+Run bare `dclaw` (no subcommand) to enter the interactive TUI. The TUI now
+includes chat, a live logs view, and bottom-right toast notifications.
 
 Commands that need the daemon exit with code 69 and structured JSON
 (`--output json`) containing `"error": "daemon_unreachable"` when it's not
@@ -199,7 +207,7 @@ escape hatch, and the append-only audit-log format.
 
 ## Status
 
-Early development — v0.3.0-beta.2.6-platform-port: paths-hardening + container posture + first-run UX + audit rotation + doctor + TOML config + cross-platform scaffolding shipped. See [WORKLOG.md](WORKLOG.md) for the full release history.
+Early development — v0.3.0-beta.3-wipe-recovery: the beta.2 hardening floor is intact, and the lost beta.1 product surface has been re-derived: TUI live logs, bottom-right toasts, and SQLite-backed per-agent chat history. See [WORKLOG.md](WORKLOG.md) for the full release history.
 
 ## Security posture
 
@@ -208,7 +216,7 @@ dclaw layers two enforcement boundaries — workspace path validation (host side
 - **Workspace path validation** (beta.1): a hard-coded denylist of system paths (`/`, `/etc`, `/usr`, `/var`, `/private/tmp`, `/Library`, `/Applications`, `/opt/homebrew`, plus `C:\Windows`/`Program Files`/`ProgramData` on Windows builds) is checked first; then a `filepath.Rel`-based containment check against `workspace-root` (set via `dclaw config set workspace-root <path>` or `dclaw init`). The `--workspace-trust=<reason>` escape hatch bypasses the allow-root check (NOT the denylist), persists per-agent in `state.db`, and writes an `outcome=trust` audit record.
 - **Container posture** (beta.2): every agent container runs with `CapDrop: ALL`, `SecurityOpt: no-new-privileges`, Docker's default seccomp profile (auto-applied — not pinned, see beta.2 plan §11 Q2 for why), `ReadonlyRootfs: true` with tmpfs overlays at `/tmp` (64m noexec) and `/run` (8m noexec), `User: 1000:1000`, `PidsLimit: 256`. The Docker control socket is denylisted as a workspace target across all three common locations (Linux `/var/run/docker.sock`, systemd `/run/docker.sock`, Docker Desktop on macOS).
 - **Audit log**: every workspace decision is logged to `$STATE_DIR/audit.log` as NDJSON. The file is opened `O_APPEND|O_CREATE|O_SYNC` at mode 0600, mutex-serialized, and size-rotated (10MB threshold / 5 files retained by default; tunable in `config.toml`'s `[audit]` table).
-- **Not yet enforced** (beta.3+): per-agent network egress allowlist (`EgressAllowlist` exists on the protocol but isn't wired through), custom seccomp profile (tighter than Docker's default), per-agent memory + CPU limits, agent image security rebase. Kernel-level CVEs (Dirty Pipe etc.) are explicitly out of scope — keep the host kernel patched.
+- **Not yet enforced** (beta.4+): per-agent network egress allowlist (`EgressAllowlist` exists on the protocol but isn't wired through), custom seccomp profile (tighter than Docker's default), per-agent memory + CPU limits, agent image security rebase. Kernel-level CVEs (Dirty Pipe etc.) are explicitly out of scope — keep the host kernel patched.
 
 See [docs/architecture.md](docs/architecture.md) §"Threat Model" and [docs/workspace-root.md](docs/workspace-root.md) for the full operational matrix.
 

@@ -96,9 +96,30 @@ Exit codes:
 	},
 }
 
+var agentChatHistoryCmd = &cobra.Command{
+	Use:   "history <name>",
+	Short: "Show persisted chat history for an agent",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateOutputFormat(); err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+		defer cancel()
+		return withClient(ctx, func(c *client.RPCClient) error {
+			messages, err := c.ChatHistoryList(ctx, args[0], 0)
+			if err != nil {
+				return HandleRPCError(cmd, err)
+			}
+			return PrintChatHistory(cmd.OutOrStdout(), messages)
+		})
+	},
+}
+
 func init() {
 	agentChatCmd.Flags().StringVar(&agentChatOneShotPrompt, "one-shot", "",
 		"send this prompt to the agent and exit after the response (required)")
 	agentChatCmd.Flags().DurationVar(&agentChatTimeout, "timeout", 60*time.Second,
 		"maximum time to wait for the agent response")
+	agentChatCmd.AddCommand(agentChatHistoryCmd)
 }

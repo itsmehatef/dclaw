@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/itsmehatef/dclaw/internal/client"
+	"github.com/itsmehatef/dclaw/internal/protocol"
 )
 
 // PrintAgents renders a list of agents in the currently selected output
@@ -61,6 +62,23 @@ func PrintStatus(w io.Writer, status string) error {
 	default:
 		_, err := fmt.Fprintln(w, status)
 		return err
+	}
+}
+
+// PrintChatHistory renders persisted chat history.
+func PrintChatHistory(w io.Writer, messages []protocol.ChatMessage) error {
+	switch outputFormat {
+	case "json":
+		return encodeJSON(w, messages)
+	case "yaml":
+		return encodeYAML(w, messages)
+	default:
+		for _, msg := range messages {
+			if _, err := fmt.Fprintf(w, "[%s] %s\n", msg.Role, msg.Content); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 }
 
