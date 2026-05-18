@@ -141,9 +141,11 @@ dclaw agent start foo
 dclaw agent chat foo --one-shot "hello"
 ```
 
-Set `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN` before `agent create` if
-you want real LLM chat. dclaw automatically inherits those two keys into the
-agent environment when they are present.
+Set `ANTHROPIC_API_KEY`, `ANTHROPIC_OAUTH_TOKEN`, or `DEEPSEEK_API_KEY` before
+`agent create` if you want real LLM chat. dclaw automatically inherits those
+provider envs into the agent environment when they are present. Anthropic keeps
+the full pi-mono coding-agent tool loop; DeepSeek is currently simple
+prompt/response chat for smoke and history flows.
 
 Note: bash does not expand `~` inside `--workspace=...`; use `$HOME/...` or an
 absolute path.

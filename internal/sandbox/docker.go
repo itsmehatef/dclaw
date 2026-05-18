@@ -69,7 +69,8 @@ const DefaultContainerUser = "1000:1000"
 // pi-mono write-path audit (agent/run.mjs + agent/Dockerfile, v0.1):
 //   - /workspace/*          bind-mount, writable unconditionally.
 //   - /tmp/*                covered by this tmpfs.
-//   - /root/.pi/agent/*     suppressed by --no-session in agent/run.mjs:29.
+//   - /root/.pi/agent/*     suppressed by --no-session in the pi-backed
+//     agent/run.mjs path.
 //   - /app/node_modules/.cache/*  build-time only (npm ci), not runtime.
 //   - /etc/resolv.conf, /etc/hosts  Docker-managed; auto-preserved.
 //

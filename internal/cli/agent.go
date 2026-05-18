@@ -17,15 +17,19 @@ import (
 // automatically inherited from the shell when the user does not pass them
 // explicitly via --env. This list is intentionally small and explicit —
 // we do NOT inherit arbitrary shell environment. To extend the list, add
-// entries here only for credentials that every dclaw user is expected to
-// supply to their agents.
+// entries here only for provider credentials and provider knobs that agents
+// need at runtime.
 //
 // Behaviour: for each key in this list, if the key is NOT already present in
-// the --env slice AND os.Getenv(key) != "", the key=value pair is prepended
-// to the slice as a lowest-priority default. Explicit --env always wins.
+// the --env slice AND os.Getenv(key) != "", the key=value pair is added as a
+// default. Explicit --env always wins.
 var wellKnownEnvKeys = []string{
 	"ANTHROPIC_API_KEY",
 	"ANTHROPIC_OAUTH_TOKEN",
+	"DEEPSEEK_API_KEY",
+	"DEEPSEEK_MODEL",
+	"DEEPSEEK_BASE_URL",
+	"DCLAW_AGENT_PROVIDER",
 }
 
 var agentCmd = &cobra.Command{
@@ -365,7 +369,7 @@ func init() {
 	agentCreateCmd.Flags().StringVar(&agentCreateWorkspaceTrust, "workspace-trust", "",
 		"explicit operator trust for a workspace path outside the allow-root; requires a non-empty reason string shown in 'agent describe' and the audit log")
 	agentCreateCmd.Flags().StringArrayVar(&agentCreateEnv, "env", nil,
-		"set env var KEY=VAL (repeatable); ANTHROPIC_API_KEY and ANTHROPIC_OAUTH_TOKEN\n"+
+		"set env var KEY=VAL (repeatable); Anthropic and DeepSeek provider envs\n"+
 			"\t\t\tare inherited from the shell if not specified")
 	agentCreateCmd.Flags().StringVar(&agentCreateEnvFile, "env-file", "",
 		"Path to dotenv-style file (KEY=VAL per line, # comments OK) to load env vars from. "+
@@ -375,7 +379,7 @@ func init() {
 
 	agentUpdateCmd.Flags().StringVar(&agentUpdateImage, "image", "", "new container image")
 	agentUpdateCmd.Flags().StringArrayVar(&agentUpdateEnv, "env", nil,
-		"set env var KEY=VAL (repeatable); ANTHROPIC_API_KEY and ANTHROPIC_OAUTH_TOKEN\n"+
+		"set env var KEY=VAL (repeatable); Anthropic and DeepSeek provider envs\n"+
 			"\t\t\tare inherited from the shell if not specified")
 	agentUpdateCmd.Flags().StringVar(&agentUpdateEnvFile, "env-file", "",
 		"Path to dotenv-style file (KEY=VAL per line, # comments OK) to load env vars from. "+
@@ -384,8 +388,7 @@ func init() {
 
 	agentLogsCmd.Flags().BoolVarP(&agentLogsFollow, "follow", "f", false, "stream new log output")
 	agentLogsCmd.Flags().IntVar(&agentLogsTail, "tail", 100, "number of lines to show from the end of the logs")
-	agentLogsCmd.Flags().BoolVar(&agentLogsStream, "stream", false, "use beta.3 streaming logs RPC")
-	_ = agentLogsCmd.Flags().MarkHidden("stream")
+	agentLogsCmd.Flags().BoolVar(&agentLogsStream, "stream", false, "use the streaming logs RPC")
 
 	agentCmd.AddCommand(
 		agentCreateCmd,

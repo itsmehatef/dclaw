@@ -54,6 +54,13 @@ export DCLAW_WORKSPACE_ROOT="${DCLAW_WORKSPACE_ROOT:-/tmp}"
 
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
+has_real_chat_key() {
+  [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${ANTHROPIC_OAUTH_TOKEN:-}" ] || [ -n "${DEEPSEEK_API_KEY:-}" ]
+}
+CHAT_PROVIDER_ENV=()
+if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+  CHAT_PROVIDER_ENV=(--env DCLAW_AGENT_PROVIDER=deepseek)
+fi
 
 wipe_smoke_containers  # Pre-run cleanup of stale containers from crashed prior runs.
 
@@ -163,9 +170,9 @@ echo "$OUT" | grep -q "smoke-ok" || fail "expected 'smoke-ok' in exec output, go
 rm -rf "${STATE_DIR_CHAT:?refuse empty}"
 pass "agent chat RPC smoke"
 
-echo "--- Test 13: agent chat real round-trip (requires ANTHROPIC_API_KEY) ---"
-if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${ANTHROPIC_OAUTH_TOKEN:-}" ]; then
-  echo "SKIP: Test 13 requires ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN — skipping (set the var to enable)"
+echo "--- Test 13: agent chat real round-trip (requires a provider key) ---"
+if ! has_real_chat_key; then
+  echo "SKIP: Test 13 requires ANTHROPIC_API_KEY, ANTHROPIC_OAUTH_TOKEN, or DEEPSEEK_API_KEY — skipping (set one to enable)"
 else
   STATE_DIR_T13=$(mktemp -d -t dclaw-smoke-t13-XXXXXXXX)
   case "$STATE_DIR_T13" in
@@ -176,7 +183,7 @@ else
   "$DCLAW_BIN" --state-dir "$STATE_DIR_T13" --daemon-socket "$SOCKET_T13" daemon start || fail "t13-start"
   # Create agent with the API key; --env inheritance handles the key if not set.
   "$DCLAW_BIN" --state-dir "$STATE_DIR_T13" --daemon-socket "$SOCKET_T13" agent create smoke-chatbot13 \
-    --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T13" || fail "t13-create"
+    --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T13" "${CHAT_PROVIDER_ENV[@]}" || fail "t13-create"
   "$DCLAW_BIN" --state-dir "$STATE_DIR_T13" --daemon-socket "$SOCKET_T13" agent start smoke-chatbot13 || fail "t13-agent-start"
   OUT=$("$DCLAW_BIN" --state-dir "$STATE_DIR_T13" --daemon-socket "$SOCKET_T13" agent chat smoke-chatbot13 \
     --one-shot "reply with only the word: SMOKE_CONFIRMED" \
@@ -709,9 +716,9 @@ cleanup_t24
 trap cleanup EXIT
 pass "agent.logs.stream RPC delivers stdout lines"
 
-echo "--- Test 25: chat history persistence — round-trip + reload (requires ANTHROPIC_API_KEY) ---"
-if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${ANTHROPIC_OAUTH_TOKEN:-}" ]; then
-  echo "SKIP: Test 25 requires ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN — skipping (set the var to enable)"
+echo "--- Test 25: chat history persistence — round-trip + reload (requires a provider key) ---"
+if ! has_real_chat_key; then
+  echo "SKIP: Test 25 requires ANTHROPIC_API_KEY, ANTHROPIC_OAUTH_TOKEN, or DEEPSEEK_API_KEY — skipping (set one to enable)"
 else
   STATE_DIR_T25=$(mktemp -d -t dclaw-smoke-t25-XXXXXXXX)
   case "$STATE_DIR_T25" in
@@ -727,7 +734,7 @@ else
   trap cleanup_t25 EXIT
   "$DCLAW_BIN" --state-dir "$STATE_DIR_T25" --daemon-socket "$SOCKET_T25" daemon start || fail "t25-start"
   "$DCLAW_BIN" --state-dir "$STATE_DIR_T25" --daemon-socket "$SOCKET_T25" agent create smoke-history \
-    --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T25" || fail "t25-create"
+    --image=dclaw-agent:v0.1 --workspace="$STATE_DIR_T25" "${CHAT_PROVIDER_ENV[@]}" || fail "t25-create"
   "$DCLAW_BIN" --state-dir "$STATE_DIR_T25" --daemon-socket "$SOCKET_T25" agent start smoke-history || fail "t25-agent-start"
   "$DCLAW_BIN" --state-dir "$STATE_DIR_T25" --daemon-socket "$SOCKET_T25" agent chat smoke-history \
     --one-shot "reply with only the word: T25_HISTORY_OK" \

@@ -78,6 +78,7 @@ type mockDockerExec struct {
 	execStderr string
 	execCode   int
 	execErr    error
+	execArgv   []string
 
 	inspectCalls int
 	execCalls    int
@@ -92,9 +93,10 @@ func (m *mockDockerExec) InspectStatus(_ context.Context, _ string) (string, err
 	return m.inspectStatus, m.inspectErr
 }
 
-func (m *mockDockerExec) ExecIn(_ context.Context, _ string, _ []string) (string, string, int, error) {
+func (m *mockDockerExec) ExecIn(_ context.Context, _ string, argv []string) (string, string, int, error) {
 	m.mu.Lock()
 	m.execCalls++
+	m.execArgv = append([]string(nil), argv...)
 	if m.execStarted != nil && m.execCalls == 1 {
 		close(m.execStarted)
 	}
@@ -110,6 +112,12 @@ func (m *mockDockerExec) calls() (int, int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.inspectCalls, m.execCalls
+}
+
+func (m *mockDockerExec) argv() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.execArgv...)
 }
 
 // ---------- helpers ----------
@@ -307,6 +315,16 @@ func TestChatHandlerSuccessfulExec(t *testing.T) {
 	}
 	if !chunk.Final {
 		t.Fatal("expected final=true")
+	}
+	gotArgv := mock.argv()
+	wantArgv := []string{"node", "/app/run.mjs", "hello"}
+	if len(gotArgv) != len(wantArgv) {
+		t.Fatalf("exec argv len=%d (%v), want %d (%v)", len(gotArgv), gotArgv, len(wantArgv), wantArgv)
+	}
+	for i := range wantArgv {
+		if gotArgv[i] != wantArgv[i] {
+			t.Fatalf("exec argv[%d]=%q, want %q (full argv %v)", i, gotArgv[i], wantArgv[i], gotArgv)
+		}
 	}
 
 	rec, err := repo.GetAgent(context.Background(), "alice")

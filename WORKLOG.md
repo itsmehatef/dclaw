@@ -558,3 +558,31 @@ Verification:
 - `make smoke-daemon` — Tests 1-24 passed; Test 25 skipped cleanly because neither `ANTHROPIC_API_KEY` nor `ANTHROPIC_OAUTH_TOKEN` was set.
 
 Final state before release: beta.3 implementation complete and ready to tag/release as `v0.3.0-beta.3-wipe-recovery`.
+
+---
+
+## 2026-05-18 — beta.3.1 DeepSeek + logs-stream polish
+
+**Target tag:** `v0.3.0-beta.3.1-deepseek-logstream`.
+
+Patch scope from the beta.3 follow-up list:
+
+- Promoted `dclaw agent logs --stream <name>` from hidden smoke hook to operator-facing CLI surface.
+- Routed daemon chat through `node /app/run.mjs` instead of execing `pi` directly, keeping provider-specific behavior inside the agent image.
+- Added a DeepSeek simple-chat path in `agent/run.mjs` using `DEEPSEEK_API_KEY` and `DEEPSEEK_MODEL=deepseek-v4-flash` by default. This is prompt/response chat for smoke/history flows; Anthropic/pi-mono remains the full coding-agent tool-loop path.
+- Added `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`, and `DCLAW_AGENT_PROVIDER` to shell-env inheritance for `agent create` / `agent update`.
+- Updated smoke Tests 13 and 25 so they run with either Anthropic credentials or `DEEPSEEK_API_KEY`; when DeepSeek is present the tests force `DCLAW_AGENT_PROVIDER=deepseek`, and they still skip cleanly when no provider key is present.
+- Updated README, INSTALL, architecture, agent README, and the beta.3 plan so the patch is visible in handoff context.
+
+Secret handling note: a DeepSeek key was provided during the session, but it was not written to repo files or echoed into committed scripts.
+
+Verification:
+
+- `go test -count=1 ./...` — green.
+- `go vet ./...` — green.
+- `make build` — green.
+- `bash -n scripts/smoke-daemon.sh agent/smoke-test.sh agent/build.sh scripts/smoke-cli.sh scripts/smoke-tui.sh` — green.
+- `docker run ... node --check /tmp/run.mjs` against the rebuilt agent image — green.
+- DeepSeek wrapper branch verified against a local mock `/chat/completions` endpoint — returned `MOCK_DEEPSEEK_OK`; network-error path returns a single clean error line instead of a Node stack trace.
+- `./scripts/smoke-cli.sh` and `./scripts/smoke-tui.sh` — green.
+- `make smoke-daemon` — Tests 1-24 passed; Tests 13 and 25 skipped cleanly because no provider key was exported into the shell.

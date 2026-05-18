@@ -22,6 +22,27 @@ func TestMergeShellEnvInheritsWellKnown(t *testing.T) {
 	}
 }
 
+func TestMergeShellEnvInheritsDeepSeek(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
+	t.Setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+	result := mergeShellEnv(nil)
+
+	want := map[string]bool{
+		"DEEPSEEK_API_KEY=sk-deepseek-test": false,
+		"DEEPSEEK_MODEL=deepseek-v4-flash":  false,
+	}
+	for _, kv := range result {
+		if _, ok := want[kv]; ok {
+			want[kv] = true
+		}
+	}
+	for kv, found := range want {
+		if !found {
+			t.Fatalf("expected %s to be inherited, got %v", kv, result)
+		}
+	}
+}
+
 func TestMergeShellEnvExplicitWins(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "should-not-appear")
 	explicit := []string{"ANTHROPIC_API_KEY=explicit-value"}

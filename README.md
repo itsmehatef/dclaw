@@ -100,8 +100,11 @@ Then create a first agent:
 ```bash
 dclaw doctor
 
-# Optional, but required for real LLM chat.
+# Optional, but required for real LLM chat. Anthropic keeps the full pi-mono
+# coding-agent tool loop; DeepSeek enables simple prompt/response chat.
 export ANTHROPIC_API_KEY="<your Anthropic API key>"
+# or:
+# export DEEPSEEK_API_KEY="<your DeepSeek API key>"
 
 mkdir -p "$HOME/dclaw/foo"
 dclaw agent create foo --image=dclaw-agent:v0.1 --workspace="$HOME/dclaw/foo"
@@ -129,7 +132,7 @@ make install
 
 # Check the build
 ./bin/dclaw version
-# dclaw version 0.3.0-beta.3-wipe-recovery (commit abc1234, built 2026-05-18T...Z, go1.25.x)
+# dclaw version 0.3.0-beta.3.1 (commit abc1234, built 2026-05-18T...Z, go1.25.x)
 ```
 
 ### Manual First Run
@@ -170,6 +173,9 @@ dclaw agent chat foo --one-shot "hello"
 # Show persisted per-agent chat history.
 dclaw agent chat history foo
 
+# Stream container logs through the beta.3 streaming RPC.
+dclaw agent logs --stream foo
+
 # See all commands: dclaw --help
 ```
 
@@ -183,6 +189,7 @@ Major verbs at a glance:
 - `dclaw daemon start|stop|status` — manage the background `dclawd` process.
 - `dclaw agent create|list|describe|start|stop|delete|logs|chat` — full agent lifecycle, logs, and chat.
 - `dclaw agent chat history <name>` — print persisted per-agent chat history; use `-o json` for machine-readable output.
+- `dclaw agent logs --stream <name>` — follow logs through the streaming logs RPC.
 - `dclaw version` — print build version, commit, build time, Go toolchain.
 
 Run bare `dclaw` (no subcommand) to enter the interactive TUI. The TUI now
@@ -207,7 +214,7 @@ escape hatch, and the append-only audit-log format.
 
 ## Status
 
-Early development — v0.3.0-beta.3-wipe-recovery: the beta.2 hardening floor is intact, and the lost beta.1 product surface has been re-derived: TUI live logs, bottom-right toasts, and SQLite-backed per-agent chat history. See [WORKLOG.md](WORKLOG.md) for the full release history.
+Early development — v0.3.0-beta.3.1: the beta.2 hardening floor is intact, and the lost beta.1 product surface has been re-derived: TUI live logs, bottom-right toasts, SQLite-backed per-agent chat history, plus beta.3.1 DeepSeek simple-chat support for smoke/history flows. See [WORKLOG.md](WORKLOG.md) for the full release history.
 
 ## Security posture
 

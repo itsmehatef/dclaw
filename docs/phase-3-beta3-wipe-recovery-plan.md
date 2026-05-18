@@ -19,6 +19,26 @@
 | **Prereqs** | beta.2.7 green; smoke-daemon.sh Tests 1-23 green on tip; main-push docker-smoke trigger active (per beta.2.1) |
 | **Trigger** | Pre-wipe content recovery — original beta.1 plan & code shipped privately on Hatef's machine before the 2026-04-18 wipe; never pushed. WORKLOG.md 2026-04-19 lists the lost artifacts: `29633a8` (logs view + Test 14), Agent B (toasts, Q1=bottom-right-float), Agent C (chat history, Q2=Option A "load on every openChat"), Phase 0 commit `d84554d` (migration `0003_` + protocol types + repo methods). |
 
+### 0.1 beta.3.1 Patch — DeepSeek + Operator Logs Stream
+
+**SHIPPED target (2026-05-18):** `v0.3.0-beta.3.1-deepseek-logstream`.
+
+Scope chosen from the beta.3 follow-up list:
+
+- Promote `dclaw agent logs --stream <name>` from a hidden smoke-only flag to a documented operator-facing CLI path.
+- Route daemon chat through the agent image wrapper (`node /app/run.mjs`) instead of execing `pi` directly, so provider choice stays inside the agent image.
+- Add `DEEPSEEK_API_KEY` simple-chat support in `agent/run.mjs` using DeepSeek's OpenAI-compatible `/chat/completions` endpoint, defaulting to `deepseek-v4-flash`. This is intentionally prompt/response chat for smoke/history flows; Anthropic/pi-mono remains the full coding-agent tool-loop path.
+- Inherit `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`, and `DCLAW_AGENT_PROVIDER` through `agent create` / `agent update` just like the existing Anthropic env inheritance.
+- Update smoke Tests 13 and 25 so either Anthropic or DeepSeek credentials can enable the real chat round-trip checks. When `DEEPSEEK_API_KEY` is present, the smoke script passes `DCLAW_AGENT_PROVIDER=deepseek` explicitly so mixed-key environments exercise DeepSeek.
+- Refresh README, INSTALL, architecture, agent README, and WORKLOG so this patch is reconstructable after another handoff.
+
+Verification captured for the patch:
+
+- Go unit suite, vet, build, shell syntax checks, CLI smoke, TUI smoke, and daemon smoke are green.
+- `agent/run.mjs` syntax is checked inside the agent image.
+- DeepSeek simple-chat branch is verified against a local mock `/chat/completions` endpoint without using or storing a real secret, including the network-error path.
+- Without a provider key exported, smoke Tests 13 and 25 skip cleanly while the rest of `make smoke-daemon` passes.
+
 ---
 
 ## 1. Overview
@@ -36,8 +56,8 @@ The hole has three orthogonal product dimensions, each with its own implementati
 - **PR-Phase0 — Schema migration + protocol types + repo methods.** Re-derives the lost `d84554d` commit from scratch. New `internal/store/migrations/0003_chat_history.sql` adding a `chat_messages` table (FK to `agents.id`, with role / content / parent_id / message_id / sequence / timestamp). New protocol types in `internal/protocol/messages.go`: `LogsStreamParams`, `LogsStreamLineNotification`, `ChatHistoryListParams`, `ChatHistoryListResult`, `ChatHistoryAppendParams`, `ChatHistoryAppendResult`, `ChatMessage` wire shape. New repo methods on `internal/store/repo.go`: `InsertChatMessage`, `ListChatHistory(agentID string, limit int)`, `DeleteChatHistoryForAgent(agentID string)` (called from `DeleteAgent` so chat-history rows get cascade-deleted via the `ON DELETE CASCADE` FK declared in the migration; `DeleteChatHistoryForAgent` exists for tests + future operator subcommands). One Phase-0 commit, no behavior change visible to the CLI/TUI yet — gates everything below.
 - **PR-A — Logs view + `agent.logs.stream` RPC.** `internal/protocol/messages.go` types from Phase-0 are now consumed. New daemon-side handler in `internal/daemon/router.go`: `agent.logs.stream` follows the `agent.chat.send` precedent — a streaming method whose handler does its own send (returns nil from `Dispatch` so the router doesn't double-send). Existing `LogStreamer.Stream` (`internal/daemon/logs.go:38`) is wired into the new handler and now drains line/error channels to terminal `agent.log.done` or `agent.log.error` notifications. New `internal/client/rpc.go:LogsStream` mirrors `ChatSend`'s dedicated-connection pattern. New `internal/tui/views/logs.go` (`LogsModel`) — a viewport-bubble-backed scrollback of agent stdout, polled-as-stream like the chat chunks. New `ViewLogs` constant in `internal/tui/views/view.go`. Root model gains a `m.logs` field plus key handler `l` to open from `ViewList` / `ViewDetail`. Smoke Test 24 (start agent, attach logs view, assert stdout content appears).
 - **PR-B — Toasts component.** New `internal/tui/components/` package (lipgloss-styled, no bubbletea sub-model — purely a render helper plus a tiny FIFO-with-timer state machine on the root). Bottom-right float per Q1. Auto-dismiss timer (3s steady-state; see §11 Q3). Max stack depth 3 (toasts beyond push the oldest off-screen). Dismissal via `t` key swallows the topmost. Integrated into the root `View()` so any view can `m.toast(level, message)` to push. Wire into `agent.create` / `agent.delete` / daemon-disconnect / error-render paths. Smoke Test (visual; not in `smoke-daemon.sh` — toast rendering is asserted via Go unit tests on the `toasts.Render` function and a `tea.Program`-snapshot test in `internal/tui/app_test.go`).
-- **PR-C — Chat history persistence.** Daemon side: `ChatHandler.Handle` (`internal/daemon/chat.go:40`) hooks into `repo.InsertChatMessage` for both the user-supplied content (immediately, before exec) and the assembled agent/error reply (on Final=true). User-turn persistence failure returns `ErrChatHistoryUnavailable` before ack; duplicate user message IDs replay an existing persisted reply without executing the agent again. New `agent.chat.history.list` / `agent.chat.history.append` RPCs registered in `internal/daemon/router.go`; append validates role/content and maps duplicates as invalid params. CLI side: `internal/client/rpc.go:ChatHistoryList` method plus `dclaw agent chat history <name>`. TUI side: `internal/tui/model.go:openChat` calls `m.rpc.ChatHistoryList(ctx, agentName, 0)` (0 = all per Q2 cap discussion in §11 Q4) and blocks new input until the history load succeeds or gracefully degrades. Smoke Test 25 (chat round-trip, then `agent chat history` asserts prior messages) runs when an Anthropic token is present and skips cleanly otherwise.
-- **PR-D — Cleanup + docs.** `README.md` mentions the new view + toast surface in the "Try it" example. `docs/architecture.md` updates the wire-protocol sub-section to add the three new RPCs. `agent/README.md` is unchanged (agent-side untouched). New `docs/phase-3-beta3-wipe-recovery-plan.md` flipped from DRAFT to SHIPPED. WORKLOG entry. Possibly: tighten any TUI corners exposed by the new components (e.g., the `views/help.go` "Coming in beta.1" stale text).
+- **PR-C — Chat history persistence.** Daemon side: `ChatHandler.Handle` (`internal/daemon/chat.go:40`) hooks into `repo.InsertChatMessage` for both the user-supplied content (immediately, before exec) and the assembled agent/error reply (on Final=true). User-turn persistence failure returns `ErrChatHistoryUnavailable` before ack; duplicate user message IDs replay an existing persisted reply without executing the agent again. New `agent.chat.history.list` / `agent.chat.history.append` RPCs registered in `internal/daemon/router.go`; append validates role/content and maps duplicates as invalid params. CLI side: `internal/client/rpc.go:ChatHistoryList` method plus `dclaw agent chat history <name>`. TUI side: `internal/tui/model.go:openChat` calls `m.rpc.ChatHistoryList(ctx, agentName, 0)` (0 = all per Q2 cap discussion in §11 Q4) and blocks new input until the history load succeeds or gracefully degrades. Smoke Test 25 (chat round-trip, then `agent chat history` asserts prior messages) runs when a provider key is present and skips cleanly otherwise.
+- **PR-D — Cleanup + docs.** `README.md` mentions the new view + toast surface in the "Try it" example. `docs/architecture.md` updates the wire-protocol sub-section to add the three new RPCs. `agent/README.md` was unchanged in beta.3 because the agent side was untouched; beta.3.1 updates it for DeepSeek/logstream wrapper reality. New `docs/phase-3-beta3-wipe-recovery-plan.md` flipped from DRAFT to SHIPPED. WORKLOG entry. Possibly: tighten any TUI corners exposed by the new components (e.g., the `views/help.go` "Coming in beta.1" stale text).
 
 **What this phase does NOT deliver (NOT IN SCOPE):**
 
@@ -184,9 +204,9 @@ echo "--- Test 24: agent logs stream — TUI-shape RPC delivers lines ---"
 # TUI (TUI is exercised separately via smoke-tui.sh); this asserts the
 # wire-level path: start agent, kick it into emitting stdout, open a
 # stream subscription, receive at least one line. Uses a small Go helper
-# (or in-process: just `dclaw agent logs <name>` with a new --stream flag,
-# see §11 Q2 — for beta.3 we wire a hidden `dclaw agent logs --stream`
-# alias for smoke testing only, no operator-facing surface).
+# (or in-process: just `dclaw agent logs <name>` with a new --stream flag.
+# beta.3 originally hid this for smoke only; beta.3.1 promotes it to an
+# operator-facing `dclaw agent logs --stream` surface).
 STATE_DIR_T24=$(mktemp -d -t dclaw-smoke-t24-XXXXXXXX)
 case "$STATE_DIR_T24" in
   /var/folders/*|/tmp/*|/private/tmp/*|/private/var/folders/*) ;;
@@ -314,9 +334,9 @@ pass "agent.logs.stream RPC delivers stdout lines"
 **§4.4a — Test 25 body:**
 
 ```bash
-echo "--- Test 25: chat history persistence — round-trip + reload (requires ANTHROPIC_API_KEY) ---"
-if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${ANTHROPIC_OAUTH_TOKEN:-}" ]; then
-  echo "SKIP: Test 25 requires ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN — skipping (set the var to enable)"
+echo "--- Test 25: chat history persistence — round-trip + reload (requires a provider key) ---"
+if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${ANTHROPIC_OAUTH_TOKEN:-}" ] && [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+  echo "SKIP: Test 25 requires ANTHROPIC_API_KEY, ANTHROPIC_OAUTH_TOKEN, or DEEPSEEK_API_KEY — skipping (set one to enable)"
 else
   STATE_DIR_T25=$(mktemp -d -t dclaw-smoke-t25-XXXXXXXX)
   case "$STATE_DIR_T25" in
@@ -359,14 +379,14 @@ fi
 - `go test ./internal/client/...` — new history list test.
 - `go test ./internal/tui/...` — extended app_test for `openChat` history load.
 - `go test ./...` regression.
-- `./scripts/smoke-daemon.sh` Tests 1-24 still green plus new Test 25 (skipped without `ANTHROPIC_API_KEY`, mirroring Test 13's pattern).
+- `./scripts/smoke-daemon.sh` Tests 1-24 still green plus new Test 25 (skipped without a provider key, mirroring Test 13's pattern).
 
 **Acceptance criteria:**
 
 1. `go test ./internal/daemon/...` passes including the three new persistence tests.
 2. After a chat round-trip, `sqlite3 $STATE_DIR/state.db 'SELECT count(*) FROM chat_messages'` returns ≥ 2 (user + agent).
 3. Re-opening the TUI chat view for an agent with prior history shows the prior messages BEFORE the user types anything new (asserted by `TestOpenChatLoadsHistory` in `internal/tui/app_test.go`).
-4. Smoke Test 25 green when `ANTHROPIC_API_KEY` is set; skip otherwise (matches Test 13 precedent).
+4. Smoke Test 25 green when a provider key is set; skip otherwise (matches Test 13 precedent). beta.3.1 forces `DCLAW_AGENT_PROVIDER=deepseek` for the test agent when `DEEPSEEK_API_KEY` is present.
 5. User-row persistence failures abort before ack/exec with `ErrChatHistoryUnavailable`; reply-row persistence failures surface as error chunks.
 6. `dclaw agent chat history <name>` subcommand exists and emits JSON.
 
@@ -389,7 +409,7 @@ fi
 | `/Users/macmini/workspace/agents/atlas/dclaw/docs/architecture.md` | MODIFIED | "Wire protocol — daemon-bound methods" subsection — add three new method names (`agent.logs.stream`, `agent.chat.history.list`, `agent.chat.history.append`) plus the new `ErrChatHistoryUnavailable = -32008` code. Net lines: ~+12. |
 | `/Users/macmini/workspace/agents/atlas/dclaw/internal/tui/views/help.go` | MODIFIED | Drop the stale "Coming in beta.1" subsection (lines 47-49). Move `l: open logs view` into the active key list. Add `t: dismiss toast` in the Actions section. Net lines: ~+3 / ~-2. |
 | `/Users/macmini/workspace/agents/atlas/dclaw/WORKLOG.md` | MODIFIED | New `## 2026-05-18 — beta.3 wipe-recovery implementation` section with scope, tester findings, and verification results. |
-| `/Users/macmini/workspace/agents/atlas/dclaw/agent/README.md` | UNCHANGED | Agent-side untouched by beta.3. |
+| `/Users/macmini/workspace/agents/atlas/dclaw/agent/README.md` | UNCHANGED in beta.3; MODIFIED in beta.3.1 | Agent-side untouched by beta.3. beta.3.1 updates the wrapper/DeepSeek documentation. |
 | `/Users/macmini/workspace/agents/atlas/dclaw/docs/workspace-root.md` | UNCHANGED | Workspace policy untouched. |
 
 **Test plan:**
@@ -502,7 +522,7 @@ Full list of smoke tests after beta.3 merges. Tests 1-23 existing (beta.1/beta.2
 
 All tests follow the existing precedent: isolated `STATE_DIR`, trap-armed cleanup, prefix-whitelist guard, explicit `--state-dir`/`--daemon-socket`/`--workspace` flags. No `$HOME` touching.
 
-**Docker requirement.** Both new tests require Docker reachable + `dclaw-agent:v0.1` built. Test 25 additionally requires `ANTHROPIC_API_KEY` (or the `_OAUTH_TOKEN` variant) per the existing Test 13 pattern. The `docker-smoke` CI workflow (main-push + tag-push triggered, per beta.2.1) covers Test 24; Test 25 will SKIP in CI because the API key is not present in repo secrets — flagged for follow-up to add a mock-Anthropic mode (already considered for Test 13; same trade-off).
+**Docker requirement.** Both new tests require Docker reachable + `dclaw-agent:v0.1` built. Test 25 additionally requires a provider key: `ANTHROPIC_API_KEY`, `ANTHROPIC_OAUTH_TOKEN`, or (as of beta.3.1) `DEEPSEEK_API_KEY`. The `docker-smoke` CI workflow (main-push + tag-push triggered, per beta.2.1) covers Test 24; Test 25 will SKIP in CI unless one of those keys is configured in the runner environment.
 
 **Estimated new run time:** Test 24 ~5s, Test 25 ~10s (with API key) or ~0s (skip). Post-beta.3 docker-smoke total estimated ~95s with API key, ~85s without. Acceptable.
 
@@ -524,7 +544,7 @@ All tests follow the existing precedent: isolated `STATE_DIR`, trap-armed cleanu
 
 **On existing workflows:**
 
-- `dclaw agent logs -f <name>` (CLI) is unchanged — still uses the alpha.1 polling path. The new streaming RPC is TUI-only by default, with the hidden `--stream` flag (mentioned in §4.2a) reserved for smoke testing. If §11 Q2 lands the operator-facing `--stream`, that's a beta.3.X polish patch.
+- `dclaw agent logs -f <name>` (CLI) is unchanged — still uses the alpha.1 polling path. As of beta.3.1, `dclaw agent logs --stream <name>` is also operator-facing and uses the beta.3 streaming RPC.
 - `dclaw agent chat <name>` gains pre-loaded history in the TUI path. Operators who chat with the same agent over multiple sessions see the conversation thread.
 
 **CI impact.** `docker-smoke` runtime grows ~5s on every main-push and tag-push (Test 24). Test 25 is skipped without the API key. Post-beta.3 docker-smoke estimated ~85-95s. No new GitHub Actions secrets needed.
@@ -644,9 +664,9 @@ If future phases adopt git worktrees (one worktree per agent), the parallel appr
 
 ### Q2: `dclaw agent logs --stream` operator-facing or smoke-test only?
 
-**Decided: smoke-test only for beta.3, follow-up promotes to operator-facing.** The `--stream` flag is implemented as part of PR-A so smoke Test 24 has a CLI surface to test against, but it's hidden via `cmd.Hidden = true` in the cobra command. Promoting to operator-facing is a cosmetic flip + a doc + a minor behavior consideration: should `--stream` print line attribution (`[stdout]` vs `[stderr]`) like `kubectl logs` does, or just raw lines? Decision deferred to a beta.3.X polish.
+**Decided: smoke-test only for beta.3; promoted in beta.3.1.** The `--stream` flag was implemented as part of PR-A so smoke Test 24 had a CLI surface to test against. beta.3 hid it via `cmd.Hidden = true`; beta.3.1 removes that hidden mark and documents `dclaw agent logs --stream <name>` as an operator-facing path.
 
-The CLI's existing `dclaw agent logs -f <name>` polling path stays the operator-facing default; it works, it's familiar.
+The CLI's existing `dclaw agent logs -f <name>` polling path stays available. The `--stream` path uses the beta.3 streaming RPC and is now the preferred way to exercise the same plumbing the TUI uses.
 
 ### Q3: Toast lifecycle parameters — `ToastDuration` and `ToastMaxStack` values?
 
@@ -707,8 +727,8 @@ Decision rationale: a TUI that won't open against a slightly-older daemon is wor
 8. **Toast click-to-dismiss** when mouse mode is enabled (per `cmd/dclaw/main.go:18 NoMouse`).
 9. **Toast colors / icons beyond level.** Per-event glyphs (e.g., 🟢 for "agent created", ⚠️ for "daemon down"). Polish.
 10. **Toast persistence** — append to a ring buffer the operator can review later (`dclaw notifications`). Out of scope for beta.3.
-11. **Promote `dclaw agent logs --stream` to operator-facing.** Per §11 Q2. Beta.3.X polish patch.
-12. **Mock-Anthropic mode for Test 25.** Same problem Test 13 has — CI can't run without an API key. A scriptable mock would make Test 25 always run in `docker-smoke`.
+11. **DONE in beta.3.1: Promote `dclaw agent logs --stream` to operator-facing.** Per §11 Q2.
+12. **PARTIAL in beta.3.1: Provider-flexible Test 25.** Test 25 now runs with Anthropic or DeepSeek credentials. A fully scriptable no-credential mock remains open if CI must exercise the round-trip without any external API key.
 13. **Wire-protocol version bump to v2** for any future breaking change. beta.3 stays at v1.
 14. **`docs/chat-history.md` operator runbook** — backup/restore implications, the role of the `state.db`, retention semantics.
 15. **Per-agent chat history retention policy.** `chat_messages` grows unbounded. A `[chat] retention-days = 30` config knob (extending the `[audit]` precedent from beta.2.5) bounds growth.
@@ -738,7 +758,7 @@ Hatef ticks these off before tagging.
 - [x] PR-C: chat round-trip persists 2 rows (user + agent) — asserted by daemon tests.
 - [x] PR-C: re-opening chat for an agent loads prior history before input is accepted — asserted by TUI tests.
 - [x] PR-C: `dclaw agent chat history <name>` subcommand exists; `-o json` emits the array.
-- [x] PR-C: smoke Test 25 runs when `ANTHROPIC_API_KEY`/`ANTHROPIC_OAUTH_TOKEN` is set; SKIPs cleanly otherwise.
+- [x] PR-C: smoke Test 25 runs when `ANTHROPIC_API_KEY`/`ANTHROPIC_OAUTH_TOKEN` is set; beta.3.1 also accepts `DEEPSEEK_API_KEY`; SKIPs cleanly otherwise.
 - [x] PR-C: persistence failures before ack are surfaced as `ErrChatHistoryUnavailable`; duplicate sends replay persisted replies without re-exec.
 - [x] PR-D implemented.
 - [x] PR-D: `docs/phase-3-beta3-wipe-recovery-plan.md` §0 reads SHIPPED.
@@ -746,9 +766,14 @@ Hatef ticks these off before tagging.
 - [x] PR-D: `docs/architecture.md` lists the new RPC methods and the new error code.
 - [x] PR-D: `internal/tui/views/help.go` no longer shows "Coming in beta.1" stale text.
 - [x] PR-D: `WORKLOG.md` has a new dated section for beta.3.
+- [x] beta.3.1: `agent logs --stream` is visible in CLI help and documented.
+- [x] beta.3.1: daemon chat execs `/app/run.mjs`, and daemon tests assert the argv.
+- [x] beta.3.1: `DEEPSEEK_API_KEY` simple-chat path is implemented without storing secrets in the repo.
+- [x] beta.3.1: Tests 13 and 25 accept DeepSeek credentials as an alternative provider key.
 - [ ] Changes merged to `main`.
-- [ ] `git tag -a v0.3.0-beta.3-wipe-recovery -m "Phase 3 beta.3 wipe-recovery: re-derive logs view + toasts + chat history persistence"`.
-- [ ] `git push origin main v0.3.0-beta.3-wipe-recovery`.
+- [x] `v0.3.0-beta.3-wipe-recovery` tagged, pushed, and released.
+- [ ] `git tag -a v0.3.0-beta.3.1-deepseek-logstream -m "Phase 3 beta.3.1: DeepSeek smoke provider + logs stream polish"`.
+- [ ] `git push origin main v0.3.0-beta.3.1-deepseek-logstream`.
 - [ ] `docker-smoke` CI workflow green on the new tag (Tests 1-25 all pass; 25 may SKIP).
 - [x] `WORKLOG.md` ship entry written.
 
@@ -770,5 +795,5 @@ Hatef ticks these off before tagging.
 - `internal/store/repo.go` — repo method site for PR-Phase0 (`InsertChatMessage`, `ListChatHistory`, `DeleteChatHistoryForAgent`).
 - `internal/store/migrations/0001_initial.sql` and `0002_workspace_trust.sql` — migration shape precedent for `0003_chat_history.sql`.
 - `internal/protocol/messages.go:42-49` — error code precedent (`ErrWorkspaceForbidden = -32007` from beta.1; PR-Phase0 adds `ErrChatHistoryUnavailable = -32008`).
-- `scripts/smoke-daemon.sh:166-189` — Test 13 (chat round-trip with `ANTHROPIC_API_KEY`); PR-C Test 25 mirrors this skip-on-no-key pattern.
+- `scripts/smoke-daemon.sh:166-189` — Test 13 (chat round-trip with an Anthropic or DeepSeek provider key); PR-C Test 25 mirrors this skip-on-no-key pattern.
 - `scripts/smoke-daemon.sh:602-670` — Test 23 (full posture probe) shape that Test 24 mirrors for the structure/cleanup.

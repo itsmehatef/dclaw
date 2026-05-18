@@ -37,7 +37,8 @@ Each agent runs inside a Docker container built on Debian (bookworm-slim) + Node
 
 **What it does:**
 - Runs the complete agent loop (prompt -> LLM call -> tool execution -> response)
-- Makes its own API calls to the LLM provider (Anthropic, OpenAI, etc.)
+- Makes its own API calls to the LLM provider (Anthropic/OpenAI/etc. through
+  pi-mono; DeepSeek simple-chat directly in beta.3.1)
 - Executes all tools locally inside the container (bash, file read/write, web fetch)
 - Manages its own conversation state and session
 
@@ -137,9 +138,10 @@ What actually shipped diverged from the original 4-phase roadmap below — the p
 - **beta.2-sandbox-hardening** (2026-04-24, .4 green after 4 hotfixes): container posture — `CapDrop: ALL`, `no-new-privileges`, Docker default seccomp (auto-applied), `ReadonlyRootfs: true` + tmpfs `/tmp` + `/run`, `User: 1000:1000`, `PidsLimit: 256`, docker.sock denylist; smoke tests 17-23.
 - **beta.2.1 — beta.2.6** (2026-04-25, 6 patches in a clean-ship streak): smoke hygiene + `docker-smoke` on main (.1); `dclaw init` first-run wizard (.2); audit log size-rotation (.3); `dclaw doctor` health-check (.4); `pelletier/go-toml/v2` config refactor with `[audit]` and `[daemon]` sub-tables (.5); XDG-aware state dir on Linux + Windows denylist scaffolding (.6).
 - **beta.2.7-linux-bootstrap** (2026-05-17): fresh Linux bootstrap/source installer path plus OrbStack/rootless-Docker handling, tagged at `e30c50b`.
-- **beta.3-wipe-recovery** (2026-05-18): re-derived the lost beta.1 product content — TUI live logs (`ViewLogs` + `agent.logs.stream`), bottom-right toast notifications, and SQLite-backed per-agent chat history loaded on every chat open. Smoke tests now cover the logs stream as Test 24 and chat-history smoke as Test 25 when an Anthropic key is present.
+- **beta.3-wipe-recovery** (2026-05-18): re-derived the lost beta.1 product content — TUI live logs (`ViewLogs` + `agent.logs.stream`), bottom-right toast notifications, and SQLite-backed per-agent chat history loaded on every chat open. Smoke tests now cover the logs stream as Test 24 and chat-history smoke as Test 25 when a provider key is present.
+- **beta.3.1** (2026-05-18): promoted `dclaw agent logs --stream` from hidden smoke hook to documented CLI surface, routed daemon chat through `/app/run.mjs`, and added `DEEPSEEK_API_KEY` simple-chat support for Test 13/Test 25 and one-shot chat.
 
-CLI surface today: `dclaw init`, `dclaw doctor`, `dclaw config get|set`, `dclaw daemon start|stop|status`, `dclaw agent create|list|describe|start|stop|delete|logs|chat`, `dclaw agent chat history <name>`, `dclaw version`, plus the bare-`dclaw` interactive TUI. There is no `dclaw up`, `dclaw upgrade`, or `dclaw rollback` yet — those were aspirational verbs in the original Phase 3 roadmap below.
+CLI surface today: `dclaw init`, `dclaw doctor`, `dclaw config get|set`, `dclaw daemon start|stop|status`, `dclaw agent create|list|describe|start|stop|delete|logs|chat`, `dclaw agent logs --stream <name>`, `dclaw agent chat history <name>`, `dclaw version`, plus the bare-`dclaw` interactive TUI. There is no `dclaw up`, `dclaw upgrade`, or `dclaw rollback` yet — those were aspirational verbs in the original Phase 3 roadmap below.
 
 Additive beta.3 RPC surface, still on `protocol.Version == 1`:
 

@@ -125,9 +125,10 @@ func (h *ChatHandler) Handle(
 
 	h.log.Debug("chat exec start", "agent", req.Name, "msg_id", msgID)
 
-	// Alpha.3/alpha.4: synchronous exec — one final chunk.
-	// Beta.1: replace with ExecInStream (true line-by-line via docker attach).
-	argv := []string{"pi", "-p", "--no-session", req.Content}
+	// Alpha.3/alpha.4: synchronous exec — one final chunk. beta.3.1 routes
+	// through the image wrapper so provider-specific handling (DeepSeek, pi
+	// provider envs) stays owned by the agent image instead of the daemon.
+	argv := []string{"node", "/app/run.mjs", req.Content}
 	stdout, stderr, exitCode, execErr := h.docker.ExecIn(ctx, rec.ContainerID, argv)
 
 	if execErr != nil {
