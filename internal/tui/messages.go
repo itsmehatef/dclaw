@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/itsmehatef/dclaw/internal/client"
+	"github.com/itsmehatef/dclaw/internal/protocol"
 )
 
 // agentsLoadedMsg carries a fresh agent list from the daemon.
@@ -59,3 +60,50 @@ type chatErrorMsg struct {
 
 // chatStreamClosedMsg signals the drain goroutine has exited (channel closed).
 type chatStreamClosedMsg struct{}
+
+type chatHistoryLoadedMsg struct {
+	agentName string
+	loadID    int
+	messages  []protocol.ChatMessage
+}
+
+type chatHistoryErrorMsg struct {
+	agentName string
+	loadID    int
+	err       error
+}
+
+// ---------- logs messages (beta.3) ----------
+
+type logsStreamOpenedMsg struct {
+	agentName string
+	streamID  int
+	lines     <-chan client.LogLineEvent
+}
+
+type logLineMsg struct {
+	streamID int
+	line     client.LogLineEvent
+}
+
+type logsErrorMsg struct {
+	agentName string
+	streamID  int
+	err       error
+}
+
+type logsStreamClosedMsg struct {
+	agentName string
+	streamID  int
+}
+
+// ---------- toast messages (beta.3) ----------
+
+type toastMsg struct {
+	level   string
+	message string
+}
+
+type toastTickMsg struct {
+	now time.Time
+}

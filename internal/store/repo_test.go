@@ -53,6 +53,46 @@ func TestMigrate0002(t *testing.T) {
 	}
 }
 
+func TestMigrate0003ChatMessagesTableExists(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "migrate-0003.db")
+	repo, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	rows, err := db.Query(`PRAGMA table_info(chat_messages)`)
+	if err != nil {
+		t.Fatalf("pragma: %v", err)
+	}
+	defer rows.Close()
+	found := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		found[name] = true
+	}
+	for _, want := range []string{"id", "agent_id", "role", "content", "parent_id", "message_id", "sequence", "timestamp"} {
+		if !found[want] {
+			t.Fatalf("chat_messages column %q not found", want)
+		}
+	}
+}
+
 // TestGetAgentNotFoundSentinel asserts that GetAgent on a missing name
 // returns an error that wraps store.ErrNotFound. The router's mapError
 // depends on this.
@@ -105,9 +145,8 @@ func TestInsertAgentNameTakenSentinel(t *testing.T) {
 	}
 }
 
-// TestMigrate0002UpDownRoundTrip exercises the migration's reversibility.
-// Up then Down should leave the schema without the workspace_trust_reason
-// column (SQLite 3.35+ supports DROP COLUMN). A second Up brings it back.
+// TestMigrate0002UpDownRoundTrip exercises 0002's reversibility. Now that
+// 0003 exists, it rolls back twice: first 0003, then 0002.
 func TestMigrate0002UpDownRoundTrip(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "roundtrip.db")
 	repo, err := store.Open(dbPath)
@@ -119,9 +158,12 @@ func TestMigrate0002UpDownRoundTrip(t *testing.T) {
 	if err := repo.Migrate(ctx); err != nil {
 		t.Fatalf("up #1: %v", err)
 	}
-	// Roll back the most-recent migration (0002).
+	// Roll back 0003, then 0002.
 	if err := repo.Rollback(ctx); err != nil {
-		t.Fatalf("down: %v", err)
+		t.Fatalf("down #1: %v", err)
+	}
+	if err := repo.Rollback(ctx); err != nil {
+		t.Fatalf("down #2: %v", err)
 	}
 
 	// Verify column is gone.
@@ -181,6 +223,49 @@ func TestMigrate0002UpDownRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMigrate0003UpDownRoundTrip(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "roundtrip-0003.db")
+	repo, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer repo.Close()
+	ctx := context.Background()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatalf("up #1: %v", err)
+	}
+	if err := repo.Rollback(ctx); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`PRAGMA table_info(chat_messages)`)
+	if err != nil {
+		t.Fatalf("pragma post-down: %v", err)
+	}
+	if rows.Next() {
+		rows.Close()
+		t.Fatalf("chat_messages table still present after down migration")
+	}
+	rows.Close()
+
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatalf("up #2: %v", err)
+	}
+	rows2, err := db.Query(`PRAGMA table_info(chat_messages)`)
+	if err != nil {
+		t.Fatalf("pragma post-up: %v", err)
+	}
+	defer rows2.Close()
+	if !rows2.Next() {
+		t.Fatalf("chat_messages table missing after re-apply")
+	}
+}
+
 // TestWorkspaceTrustReasonColumnExists opens the DB via the raw sql.DB
 // after Migrate and performs a PRAGMA table_info inspection to confirm
 // the column landed. This double-checks the schema shape independent
@@ -228,4 +313,139 @@ func TestWorkspaceTrustReasonColumnExists(t *testing.T) {
 	if !found {
 		t.Fatalf("workspace_trust_reason column not found in agents table")
 	}
+}
+
+func TestInsertAndListChatHistory(t *testing.T) {
+	repo := openMigratedRepo(t, "chat-history.db")
+	defer repo.Close()
+	ctx := context.Background()
+
+	a1 := insertTestAgent(t, repo, "agent-one")
+	a2 := insertTestAgent(t, repo, "agent-two")
+	for _, rec := range []store.ChatMessageRecord{
+		{ID: "m1", AgentID: a1.ID, Role: "user", Content: "hello", MessageID: "msg-1", Sequence: 0, Timestamp: 10},
+		{ID: "m2", AgentID: a1.ID, Role: "agent", Content: "hi", ParentID: "msg-1", MessageID: "msg-2", Sequence: 1, Timestamp: 11},
+		{ID: "m3", AgentID: a1.ID, Role: "user", Content: "again", ParentID: "msg-2", MessageID: "msg-3", Sequence: 0, Timestamp: 12},
+		{ID: "m4", AgentID: a2.ID, Role: "user", Content: "other", MessageID: "msg-4", Sequence: 0, Timestamp: 13},
+	} {
+		if err := repo.InsertChatMessage(ctx, rec); err != nil {
+			t.Fatalf("insert chat %s: %v", rec.ID, err)
+		}
+	}
+
+	got, err := repo.ListChatHistory(ctx, a1.ID, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len=%d want 3", len(got))
+	}
+	for i, want := range []string{"msg-1", "msg-2", "msg-3"} {
+		if got[i].MessageID != want {
+			t.Fatalf("message[%d]=%q want %q", i, got[i].MessageID, want)
+		}
+	}
+
+	limited, err := repo.ListChatHistory(ctx, a1.ID, 2)
+	if err != nil {
+		t.Fatalf("list limited: %v", err)
+	}
+	if len(limited) != 2 || limited[0].MessageID != "msg-1" || limited[1].MessageID != "msg-2" {
+		t.Fatalf("limited result = %#v", limited)
+	}
+}
+
+func TestInsertChatMessageDuplicateMessageID(t *testing.T) {
+	repo := openMigratedRepo(t, "chat-history-dup.db")
+	defer repo.Close()
+	ctx := context.Background()
+	a := insertTestAgent(t, repo, "agent-dup")
+
+	rec := store.ChatMessageRecord{
+		ID: "m1", AgentID: a.ID, Role: "user", Content: "hello", MessageID: "dup-message-id", Timestamp: 10,
+	}
+	if err := repo.InsertChatMessage(ctx, rec); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	rec.ID = "m2"
+	err := repo.InsertChatMessage(ctx, rec)
+	if err == nil {
+		t.Fatalf("expected duplicate message_id error")
+	}
+	if !errors.Is(err, store.ErrNameTaken) {
+		t.Fatalf("expected ErrNameTaken wrap, got %v", err)
+	}
+}
+
+func TestDeleteChatHistoryForAgent(t *testing.T) {
+	repo := openMigratedRepo(t, "chat-history-delete.db")
+	defer repo.Close()
+	ctx := context.Background()
+	a := insertTestAgent(t, repo, "agent-delete-history")
+
+	for _, rec := range []store.ChatMessageRecord{
+		{ID: "m1", AgentID: a.ID, Role: "user", Content: "hello", MessageID: "delete-1", Timestamp: 10},
+		{ID: "m2", AgentID: a.ID, Role: "agent", Content: "hi", MessageID: "delete-2", Timestamp: 11},
+	} {
+		if err := repo.InsertChatMessage(ctx, rec); err != nil {
+			t.Fatalf("insert chat %s: %v", rec.ID, err)
+		}
+	}
+	if err := repo.DeleteChatHistoryForAgent(ctx, a.ID); err != nil {
+		t.Fatalf("delete history: %v", err)
+	}
+	got, err := repo.ListChatHistory(ctx, a.ID, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("history len=%d want 0", len(got))
+	}
+}
+
+func TestDeleteAgentCascadesChatHistory(t *testing.T) {
+	repo := openMigratedRepo(t, "chat-history-cascade.db")
+	defer repo.Close()
+	ctx := context.Background()
+	a := insertTestAgent(t, repo, "agent-cascade")
+	if err := repo.InsertChatMessage(ctx, store.ChatMessageRecord{
+		ID: "m1", AgentID: a.ID, Role: "user", Content: "hello", MessageID: "cascade-1", Timestamp: 10,
+	}); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	if err := repo.DeleteAgent(ctx, a.Name); err != nil {
+		t.Fatalf("delete agent: %v", err)
+	}
+	got, err := repo.ListChatHistory(ctx, a.ID, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("history len=%d want 0 after agent delete cascade", len(got))
+	}
+}
+
+func openMigratedRepo(t *testing.T, name string) *store.Repo {
+	t.Helper()
+	repo, err := store.Open(filepath.Join(t.TempDir(), name))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := repo.Migrate(context.Background()); err != nil {
+		_ = repo.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	return repo
+}
+
+func insertTestAgent(t *testing.T, repo *store.Repo, name string) store.AgentRecord {
+	t.Helper()
+	rec := store.AgentRecord{
+		ID: store.NewID(), Name: name, Image: "image:latest", Status: "created",
+		Labels: "{}", Env: "{}", CreatedAt: 1, UpdatedAt: 1,
+	}
+	if err := repo.InsertAgent(context.Background(), rec); err != nil {
+		t.Fatalf("insert agent %s: %v", name, err)
+	}
+	return rec
 }

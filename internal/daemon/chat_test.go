@@ -7,9 +7,12 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/itsmehatef/dclaw/internal/daemon"
+	"github.com/itsmehatef/dclaw/internal/paths"
 	"github.com/itsmehatef/dclaw/internal/protocol"
 	"github.com/itsmehatef/dclaw/internal/store"
 )
@@ -64,6 +67,8 @@ func insertRunningAgent(t *testing.T, repo *store.Repo, name, containerID string
 // mockDockerExec is a test double for sandbox.DockerExecClient. Fields control
 // the return values from InspectStatus and ExecIn.
 type mockDockerExec struct {
+	mu sync.Mutex
+
 	// InspectStatus returns these.
 	inspectStatus string
 	inspectErr    error
@@ -73,14 +78,38 @@ type mockDockerExec struct {
 	execStderr string
 	execCode   int
 	execErr    error
+
+	inspectCalls int
+	execCalls    int
+	execStarted  chan struct{}
+	execRelease  chan struct{}
 }
 
 func (m *mockDockerExec) InspectStatus(_ context.Context, _ string) (string, error) {
+	m.mu.Lock()
+	m.inspectCalls++
+	m.mu.Unlock()
 	return m.inspectStatus, m.inspectErr
 }
 
 func (m *mockDockerExec) ExecIn(_ context.Context, _ string, _ []string) (string, string, int, error) {
+	m.mu.Lock()
+	m.execCalls++
+	if m.execStarted != nil && m.execCalls == 1 {
+		close(m.execStarted)
+	}
+	release := m.execRelease
+	m.mu.Unlock()
+	if release != nil {
+		<-release
+	}
 	return m.execStdout, m.execStderr, m.execCode, m.execErr
+}
+
+func (m *mockDockerExec) calls() (int, int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.inspectCalls, m.execCalls
 }
 
 // ---------- helpers ----------
@@ -96,7 +125,7 @@ func sendCollector(received *[]*protocol.Envelope) func(*protocol.Envelope) erro
 // chatParams marshals an AgentChatSendParams to json.RawMessage.
 func chatParams(t *testing.T, name, content string) json.RawMessage {
 	t.Helper()
-	b, err := json.Marshal(protocol.AgentChatSendParams{Name: name, Content: content})
+	b, err := json.Marshal(protocol.AgentChatSendParams{Name: name, Content: content, MessageID: "user-msg-" + name})
 	if err != nil {
 		t.Fatalf("chatParams marshal: %v", err)
 	}
@@ -136,6 +165,23 @@ func TestChatHandlerMissingContent(t *testing.T) {
 	// handler with nil repo — the missing-content check fires before any repo call.
 	h := daemon.NewChatHandler(nil, nil, nil)
 	params, _ := json.Marshal(protocol.AgentChatSendParams{Name: "alice", Content: ""})
+	_ = h.Handle(context.Background(), params, 1, sendCollector(&received))
+
+	if len(received) == 0 {
+		t.Fatal("expected an error response")
+	}
+	if received[0].Error == nil {
+		t.Fatal("expected error envelope")
+	}
+	if received[0].Error.Code != protocol.ErrInvalidParams {
+		t.Fatalf("expected -32602, got %d", received[0].Error.Code)
+	}
+}
+
+func TestChatHandlerMissingMessageID(t *testing.T) {
+	var received []*protocol.Envelope
+	h := daemon.NewChatHandler(nil, nil, nil)
+	params, _ := json.Marshal(protocol.AgentChatSendParams{Name: "alice", Content: "hello"})
 	_ = h.Handle(context.Background(), params, 1, sendCollector(&received))
 
 	if len(received) == 0 {
@@ -262,6 +308,264 @@ func TestChatHandlerSuccessfulExec(t *testing.T) {
 	if !chunk.Final {
 		t.Fatal("expected final=true")
 	}
+
+	rec, err := repo.GetAgent(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	history, err := repo.ListChatHistory(context.Background(), rec.ID, 0)
+	if err != nil {
+		t.Fatalf("ListChatHistory: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history len=%d want 2", len(history))
+	}
+	if history[0].Role != "user" || history[0].Content != "hello" || history[0].MessageID != "user-msg-alice" {
+		t.Fatalf("unexpected user history row: %#v", history[0])
+	}
+	if history[1].Role != "agent" || history[1].Content != "Hello from pi!\n" || history[1].ParentID != "user-msg-alice" {
+		t.Fatalf("unexpected agent history row: %#v", history[1])
+	}
+	if history[1].MessageID != chunk.MessageID {
+		t.Fatalf("reply message id mismatch: history=%q chunk=%q", history[1].MessageID, chunk.MessageID)
+	}
+}
+
+func TestChatHandlerDuplicateMessageIDReplaysReplyWithoutExec(t *testing.T) {
+	repo := newTestRepo(t)
+	insertRunningAgent(t, repo, "alice", "ctr-abc")
+
+	mock := &mockDockerExec{
+		inspectStatus: "running",
+		execStdout:    "Hello once!\n",
+		execCode:      0,
+	}
+
+	h := daemon.NewChatHandler(silentLogger(), repo, mock)
+	params := chatParams(t, "alice", "hello")
+
+	var first []*protocol.Envelope
+	if err := h.Handle(context.Background(), params, 1, sendCollector(&first)); err != nil {
+		t.Fatalf("first Handle returned error: %v", err)
+	}
+	_, execCalls := mock.calls()
+	if execCalls != 1 {
+		t.Fatalf("exec calls after first send=%d want 1", execCalls)
+	}
+
+	var replay []*protocol.Envelope
+	if err := h.Handle(context.Background(), params, 2, sendCollector(&replay)); err != nil {
+		t.Fatalf("replay Handle returned error: %v", err)
+	}
+	inspectCalls, execCalls := mock.calls()
+	if inspectCalls != 1 || execCalls != 1 {
+		t.Fatalf("duplicate should not inspect/exec again, inspect=%d exec=%d", inspectCalls, execCalls)
+	}
+	if len(replay) != 2 {
+		t.Fatalf("expected replay ack + chunk, got %d envelopes", len(replay))
+	}
+	if replay[0].Error != nil {
+		t.Fatalf("replay ack should not be error: %v", replay[0].Error)
+	}
+	var chunk protocol.AgentChatChunkNotification
+	if err := json.Unmarshal(replay[1].Params, &chunk); err != nil {
+		t.Fatalf("unmarshal replay chunk: %v", err)
+	}
+	if chunk.Role != "agent" || chunk.Text != "Hello once!\n" || !chunk.Final {
+		t.Fatalf("unexpected replay chunk: %#v", chunk)
+	}
+
+	rec, err := repo.GetAgent(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	history, err := repo.ListChatHistory(context.Background(), rec.ID, 0)
+	if err != nil {
+		t.Fatalf("ListChatHistory: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("duplicate send should not add history rows, got %d", len(history))
+	}
+}
+
+func TestChatHandlerDuplicateMessageIDWaitsForInFlightReply(t *testing.T) {
+	repo := newTestRepo(t)
+	insertRunningAgent(t, repo, "alice", "ctr-abc")
+	rec, err := repo.GetAgent(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	if err := repo.InsertChatMessage(context.Background(), store.ChatMessageRecord{
+		ID:        store.NewID(),
+		AgentID:   rec.ID,
+		Role:      "user",
+		Content:   "hello",
+		MessageID: "user-msg-alice",
+		Timestamp: time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("InsertChatMessage user: %v", err)
+	}
+
+	mock := &mockDockerExec{
+		inspectStatus: "running",
+		execStdout:    "should not run\n",
+		execCode:      0,
+	}
+	h := daemon.NewChatHandler(silentLogger(), repo, mock)
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_ = repo.InsertChatMessage(context.Background(), store.ChatMessageRecord{
+			ID:        store.NewID(),
+			AgentID:   rec.ID,
+			Role:      "agent",
+			Content:   "eventual reply\n",
+			ParentID:  "user-msg-alice",
+			MessageID: "reply-msg-alice",
+			Timestamp: time.Now().Unix(),
+		})
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var received []*protocol.Envelope
+	if err := h.Handle(ctx, chatParams(t, "alice", "hello"), 2, sendCollector(&received)); err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+	inspectCalls, execCalls := mock.calls()
+	if inspectCalls != 0 || execCalls != 0 {
+		t.Fatalf("duplicate should not inspect/exec, inspect=%d exec=%d", inspectCalls, execCalls)
+	}
+	if len(received) != 2 {
+		t.Fatalf("expected ack + replay chunk, got %d envelopes", len(received))
+	}
+	var chunk protocol.AgentChatChunkNotification
+	if err := json.Unmarshal(received[1].Params, &chunk); err != nil {
+		t.Fatalf("unmarshal replay chunk: %v", err)
+	}
+	if chunk.Role != "agent" || chunk.Text != "eventual reply\n" || chunk.MessageID != "reply-msg-alice" || !chunk.Final {
+		t.Fatalf("unexpected replay chunk: %#v", chunk)
+	}
+}
+
+func TestChatHandlerConcurrentDuplicateMessageIDWaitsForOriginalReply(t *testing.T) {
+	repo := newTestRepo(t)
+	insertRunningAgent(t, repo, "alice", "ctr-abc")
+
+	execStarted := make(chan struct{})
+	execRelease := make(chan struct{})
+	mock := &mockDockerExec{
+		inspectStatus: "running",
+		execStdout:    "original reply\n",
+		execCode:      0,
+		execStarted:   execStarted,
+		execRelease:   execRelease,
+	}
+	h := daemon.NewChatHandler(silentLogger(), repo, mock)
+	params := chatParams(t, "alice", "hello")
+
+	firstEnvs := make(chan *protocol.Envelope, 4)
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- h.Handle(context.Background(), params, 1, func(env *protocol.Envelope) error {
+			firstEnvs <- env
+			return nil
+		})
+	}()
+	select {
+	case <-execStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first send did not reach ExecIn")
+	}
+
+	secondEnvs := make(chan *protocol.Envelope, 4)
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- h.Handle(context.Background(), params, 2, func(env *protocol.Envelope) error {
+			secondEnvs <- env
+			return nil
+		})
+	}()
+
+	select {
+	case env := <-secondEnvs:
+		if env.Error != nil {
+			t.Fatalf("duplicate ack should not be error: %v", env.Error)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("duplicate did not ack")
+	}
+	select {
+	case env := <-secondEnvs:
+		t.Fatalf("duplicate should wait for original reply before final chunk, got %#v", env)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(execRelease)
+
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first Handle returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Handle did not finish")
+	}
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("second Handle returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Handle did not finish")
+	}
+
+	var replay protocol.AgentChatChunkNotification
+	for len(secondEnvs) > 0 {
+		env := <-secondEnvs
+		if env.Method != "agent.chat.chunk" {
+			continue
+		}
+		if err := json.Unmarshal(env.Params, &replay); err != nil {
+			t.Fatalf("unmarshal replay: %v", err)
+		}
+	}
+	if replay.Role != "agent" || replay.Text != "original reply\n" || !replay.Final || replay.MessageID == "" {
+		t.Fatalf("unexpected replay chunk: %#v", replay)
+	}
+	_, execCalls := mock.calls()
+	if execCalls != 1 {
+		t.Fatalf("duplicate should not execute again, exec calls=%d", execCalls)
+	}
+}
+
+func TestChatHandlerUserPersistenceFailureAbortsBeforeAckOrExec(t *testing.T) {
+	repo := newTestRepo(t)
+	insertRunningAgent(t, repo, "alice", "ctr-abc")
+	if err := repo.Rollback(context.Background()); err != nil {
+		t.Fatalf("Rollback 0003: %v", err)
+	}
+
+	mock := &mockDockerExec{
+		inspectStatus: "running",
+		execStdout:    "should not run\n",
+		execCode:      0,
+	}
+	var received []*protocol.Envelope
+	h := daemon.NewChatHandler(silentLogger(), repo, mock)
+	if err := h.Handle(context.Background(), chatParams(t, "alice", "hello"), 1, sendCollector(&received)); err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+	if len(received) != 1 {
+		t.Fatalf("expected one error response, got %d", len(received))
+	}
+	if received[0].Error == nil || received[0].Error.Code != protocol.ErrChatHistoryUnavailable {
+		t.Fatalf("expected ErrChatHistoryUnavailable, got %#v", received[0].Error)
+	}
+	inspectCalls, execCalls := mock.calls()
+	if inspectCalls != 0 || execCalls != 0 {
+		t.Fatalf("history failure should not inspect/exec, inspect=%d exec=%d", inspectCalls, execCalls)
+	}
 }
 
 // TestChatHandlerNonZeroExitCode verifies that a non-zero exit code from ExecIn
@@ -299,6 +603,20 @@ func TestChatHandlerNonZeroExitCode(t *testing.T) {
 	if len(chunk.Text) == 0 {
 		t.Fatal("expected non-empty error text")
 	}
+	rec, err := repo.GetAgent(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("GetAgent: %v", err)
+	}
+	history, err := repo.ListChatHistory(context.Background(), rec.ID, 0)
+	if err != nil {
+		t.Fatalf("ListChatHistory: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history len=%d want 2", len(history))
+	}
+	if history[1].Role != "error" || history[1].ParentID != "user-msg-alice" {
+		t.Fatalf("unexpected error history row: %#v", history[1])
+	}
 }
 
 // TestChatHandlerExecError verifies that an ExecIn error (e.g., Docker daemon
@@ -327,4 +645,66 @@ func TestChatHandlerExecError(t *testing.T) {
 	if chunk.Role != "error" {
 		t.Fatalf("expected error chunk on exec failure, got role=%q", chunk.Role)
 	}
+}
+
+func TestChatHistoryAppendValidationAndDuplicate(t *testing.T) {
+	repo := newTestRepo(t)
+	insertRunningAgent(t, repo, "alice", "ctr-abc")
+	r := daemon.NewRouter(silentLogger(), repo, nil, paths.Policy{}, nil)
+
+	invalidRole := dispatchTestRPC(t, r, "agent.chat.history.append", protocol.ChatHistoryAppendParams{
+		Name:      "alice",
+		Role:      "bogus",
+		Content:   "hello",
+		MessageID: "manual-1",
+	})
+	if invalidRole.Error == nil || invalidRole.Error.Code != protocol.ErrInvalidParams {
+		t.Fatalf("invalid role error=%#v want ErrInvalidParams", invalidRole.Error)
+	}
+
+	emptyContent := dispatchTestRPC(t, r, "agent.chat.history.append", protocol.ChatHistoryAppendParams{
+		Name:      "alice",
+		Role:      "user",
+		MessageID: "manual-1",
+	})
+	if emptyContent.Error == nil || emptyContent.Error.Code != protocol.ErrInvalidParams {
+		t.Fatalf("empty content error=%#v want ErrInvalidParams", emptyContent.Error)
+	}
+
+	missingMessageID := dispatchTestRPC(t, r, "agent.chat.history.append", protocol.ChatHistoryAppendParams{
+		Name:    "alice",
+		Role:    "user",
+		Content: "hello",
+	})
+	if missingMessageID.Error == nil || missingMessageID.Error.Code != protocol.ErrInvalidParams {
+		t.Fatalf("missing message_id error=%#v want ErrInvalidParams", missingMessageID.Error)
+	}
+
+	params := protocol.ChatHistoryAppendParams{
+		Name:      "alice",
+		Role:      "user",
+		Content:   "hello",
+		MessageID: "manual-1",
+	}
+	ok := dispatchTestRPC(t, r, "agent.chat.history.append", params)
+	if ok.Error != nil {
+		t.Fatalf("append error: %v", ok.Error)
+	}
+	dupe := dispatchTestRPC(t, r, "agent.chat.history.append", params)
+	if dupe.Error == nil || dupe.Error.Code != protocol.ErrInvalidParams {
+		t.Fatalf("duplicate error=%#v want ErrInvalidParams", dupe.Error)
+	}
+}
+
+func dispatchTestRPC(t *testing.T, r *daemon.Router, method string, params any) *protocol.Envelope {
+	t.Helper()
+	env := protocol.Request(1, method, params)
+	resp := r.Dispatch(context.Background(), env, func(*protocol.Envelope) error {
+		t.Fatal("unexpected streaming send")
+		return nil
+	})
+	if resp == nil {
+		t.Fatal("expected response envelope")
+	}
+	return resp
 }

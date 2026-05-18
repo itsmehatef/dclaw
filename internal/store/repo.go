@@ -55,6 +55,18 @@ type EventRecord struct {
 	Timestamp int64
 }
 
+// ChatMessageRecord is the on-disk shape of a persisted chat message.
+type ChatMessageRecord struct {
+	ID        string
+	AgentID   string
+	Role      string
+	Content   string
+	ParentID  string
+	MessageID string
+	Sequence  int
+	Timestamp int64
+}
+
 // InsertAgent inserts a new row. Returns an error wrapping ErrNameTaken if
 // the name already exists.
 func (r *Repo) InsertAgent(ctx context.Context, rec AgentRecord) error {
@@ -277,6 +289,58 @@ func (r *Repo) RecentEvents(ctx context.Context, agentID string, limit int) ([]p
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// InsertChatMessage appends one chat-history row. Duplicate message IDs wrap
+// ErrNameTaken so callers can treat retried writes as an invalid duplicate.
+func (r *Repo) InsertChatMessage(ctx context.Context, rec ChatMessageRecord) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO chat_messages (id, agent_id, role, content, parent_id, message_id, sequence, timestamp)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, rec.ID, rec.AgentID, rec.Role, rec.Content, rec.ParentID, rec.MessageID, rec.Sequence, rec.Timestamp)
+	if err != nil && isUniqueConstraintErr(err) && containsFold(err.Error(), "chat_messages.message_id") {
+		return fmt.Errorf("chat message %q: %w", rec.MessageID, ErrNameTaken)
+	}
+	return err
+}
+
+// ListChatHistory returns chat messages for an agent oldest-first. Limit 0
+// means all rows.
+func (r *Repo) ListChatHistory(ctx context.Context, agentID string, limit int) ([]ChatMessageRecord, error) {
+	query := `
+		SELECT id, agent_id, role, content, parent_id, message_id, sequence, timestamp
+		FROM chat_messages
+		WHERE agent_id = ?
+		ORDER BY timestamp ASC, sequence ASC, id ASC
+	`
+	args := []any{agentID}
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ChatMessageRecord
+	for rows.Next() {
+		var rec ChatMessageRecord
+		if err := rows.Scan(&rec.ID, &rec.AgentID, &rec.Role, &rec.Content, &rec.ParentID, &rec.MessageID, &rec.Sequence, &rec.Timestamp); err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+// DeleteChatHistoryForAgent removes persisted chat messages for one agent.
+// The agents FK also cascades on DeleteAgent; this explicit method exists for
+// tests and future operator commands.
+func (r *Repo) DeleteChatHistoryForAgent(ctx context.Context, agentID string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM chat_messages WHERE agent_id = ?`, agentID)
+	return err
 }
 
 // NewID returns a new ULID string suitable for id columns.

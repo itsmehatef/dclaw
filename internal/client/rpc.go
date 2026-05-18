@@ -304,6 +304,22 @@ func (c *RPCClient) DaemonStatus(ctx context.Context) (string, error) {
 	return fmt.Sprintf("agents=%d running=%d channels=%d", out.Agents, out.Running, out.Channels), nil
 }
 
+// ChatHistoryList returns persisted chat history for one agent.
+func (c *RPCClient) ChatHistoryList(ctx context.Context, agentName string, limit int) ([]protocol.ChatMessage, error) {
+	var out protocol.ChatHistoryListResult
+	if err := c.call(ctx, "agent.chat.history.list", protocol.ChatHistoryListParams{Name: agentName, Limit: limit}, &out); err != nil {
+		return nil, err
+	}
+	return out.Messages, nil
+}
+
+// ChatHistoryAppend appends one history row through the daemon. The normal
+// chat path persists directly server-side; this wrapper is useful for tests
+// and future operator tools.
+func (c *RPCClient) ChatHistoryAppend(ctx context.Context, params protocol.ChatHistoryAppendParams) error {
+	return c.call(ctx, "agent.chat.history.append", params, nil)
+}
+
 // Ensure RPCClient implements Client at compile time.
 var _ Client = (*RPCClient)(nil)
 
@@ -400,6 +416,175 @@ type ChatChunkEvent struct {
 	Final     bool
 	MessageID string
 	Err       error
+}
+
+// LogLineEvent is one event delivered on the channel returned by LogsStream.
+type LogLineEvent struct {
+	Name      string
+	Line      string
+	Stream    string
+	Timestamp string
+	Err       error
+}
+
+// LogsStream opens a dedicated connection and subscribes to agent.log.line
+// notifications produced by agent.logs.stream.
+func (c *RPCClient) LogsStream(ctx context.Context, agentName string, tail int) (<-chan LogLineEvent, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", c.socket)
+	if err != nil {
+		return nil, fmt.Errorf("logs dial: %w", err)
+	}
+
+	dec := json.NewDecoder(conn)
+	enc := json.NewEncoder(conn)
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+
+	hsParams, _ := json.Marshal(protocol.Handshake{
+		ProtocolVersion:  protocol.Version,
+		ComponentType:    protocol.ComponentType("cli"),
+		ComponentVersion: version.Version,
+		ComponentID:      uuid.NewString(),
+	})
+	hsEnv := protocol.Envelope{
+		JSONRPC: "2.0",
+		Method:  "dclaw.handshake",
+		ID:      int64(1),
+	}
+	hsEnv.Params = hsParams
+	if err := enc.Encode(&hsEnv); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("logs handshake send: %w", err)
+	}
+	var hsResp protocol.Envelope
+	if err := dec.Decode(&hsResp); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("logs handshake recv: %w", err)
+	}
+	if hsResp.Error != nil {
+		conn.Close()
+		return nil, fmt.Errorf("logs handshake rejected: %s", hsResp.Error.Message)
+	}
+
+	reqEnv := protocol.Request(2, "agent.logs.stream", protocol.LogsStreamParams{
+		Name:   agentName,
+		Tail:   tail,
+		Follow: true,
+	})
+	if err := enc.Encode(reqEnv); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("logs stream send: %w", err)
+	}
+
+	var ackEnv protocol.Envelope
+	if err := dec.Decode(&ackEnv); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("logs stream ack recv: %w", err)
+	}
+	if ackEnv.Error != nil {
+		conn.Close()
+		if isMethodNotFoundRPC(ackEnv.Error) {
+			return c.logsStreamPollFallback(ctx, agentName, tail)
+		}
+		return nil, ackEnv.Error
+	}
+
+	ch := make(chan LogLineEvent, 128)
+	go func() {
+		defer conn.Close()
+		defer close(ch)
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			var env protocol.Envelope
+			if err := dec.Decode(&env); err != nil {
+				if ctx.Err() != nil || errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
+					return
+				}
+				select {
+				case ch <- LogLineEvent{Err: fmt.Errorf("logs stream read: %w", err)}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			if env.Method != "agent.log.line" {
+				if env.Method == "agent.log.done" {
+					return
+				}
+				if env.Method == "agent.log.error" {
+					var streamErr protocol.LogsStreamErrorNotification
+					if err := json.Unmarshal(env.Params, &streamErr); err != nil {
+						select {
+						case ch <- LogLineEvent{Err: fmt.Errorf("log error decode: %w", err)}:
+						case <-ctx.Done():
+						}
+						return
+					}
+					select {
+					case ch <- LogLineEvent{Name: streamErr.Name, Err: errors.New(streamErr.Error)}:
+					case <-ctx.Done():
+					}
+					return
+				}
+				continue
+			}
+			var line protocol.LogsStreamLineNotification
+			if err := json.Unmarshal(env.Params, &line); err != nil {
+				select {
+				case ch <- LogLineEvent{Err: fmt.Errorf("log line decode: %w", err)}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			event := LogLineEvent{
+				Name:      line.Name,
+				Line:      line.Line,
+				Stream:    line.Stream,
+				Timestamp: line.Timestamp,
+			}
+			select {
+			case ch <- event:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
+func (c *RPCClient) logsStreamPollFallback(ctx context.Context, agentName string, tail int) (<-chan LogLineEvent, error) {
+	lines, err := c.AgentLogs(ctx, agentName, tail, true)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan LogLineEvent, 256)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case line, ok := <-lines:
+				if !ok {
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case out <- LogLineEvent{Name: agentName, Line: line, Stream: "stdout"}:
+				}
+			}
+		}
+	}()
+	return out, nil
+}
+
+func isMethodNotFoundRPC(err *protocol.RPCError) bool {
+	return err != nil && err.Code == protocol.ErrMethodNotFound
 }
 
 // ChatSend sends agent.chat.send to the daemon and returns a channel that

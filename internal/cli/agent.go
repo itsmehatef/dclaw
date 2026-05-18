@@ -285,6 +285,7 @@ var agentRestartCmd = &cobra.Command{
 var (
 	agentLogsFollow bool
 	agentLogsTail   int
+	agentLogsStream bool
 )
 
 var agentLogsCmd = &cobra.Command{
@@ -295,6 +296,20 @@ var agentLogsCmd = &cobra.Command{
 		ctx, cancel := context.WithCancel(cmd.Context())
 		defer cancel()
 		return withClient(ctx, func(c *client.RPCClient) error {
+			if agentLogsStream {
+				ch, err := c.LogsStream(ctx, args[0], agentLogsTail)
+				if err != nil {
+					return HandleRPCError(cmd, err)
+				}
+				for event := range ch {
+					if event.Err != nil {
+						return event.Err
+					}
+					fmt.Fprintln(cmd.OutOrStdout(), event.Line)
+				}
+				return nil
+			}
+
 			ch, err := c.AgentLogs(ctx, args[0], agentLogsTail, agentLogsFollow)
 			if err != nil {
 				return HandleRPCError(cmd, err)
@@ -369,6 +384,8 @@ func init() {
 
 	agentLogsCmd.Flags().BoolVarP(&agentLogsFollow, "follow", "f", false, "stream new log output")
 	agentLogsCmd.Flags().IntVar(&agentLogsTail, "tail", 100, "number of lines to show from the end of the logs")
+	agentLogsCmd.Flags().BoolVar(&agentLogsStream, "stream", false, "use beta.3 streaming logs RPC")
+	_ = agentLogsCmd.Flags().MarkHidden("stream")
 
 	agentCmd.AddCommand(
 		agentCreateCmd,

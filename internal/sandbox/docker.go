@@ -133,6 +133,16 @@ type DockerExecClient interface {
 // Verify DockerClient satisfies DockerExecClient at compile time.
 var _ DockerExecClient = (*DockerClient)(nil)
 
+// DockerLogsClient is the subset of DockerClient methods needed by the logs
+// stream handler. Tests inject a fake so daemon/logs.go can be exercised
+// without a live Docker daemon.
+type DockerLogsClient interface {
+	LogsFollow(ctx context.Context, id string, tail int) (<-chan string, <-chan error)
+}
+
+// Verify DockerClient satisfies DockerLogsClient at compile time.
+var _ DockerLogsClient = (*DockerClient)(nil)
+
 // CreateSpec captures everything the daemon needs to create a new agent
 // container.
 type CreateSpec struct {
@@ -346,18 +356,22 @@ func (d *DockerClient) LogsTail(ctx context.Context, id string, tail int) ([]str
 // LogsFollow returns a channel that streams log lines until ctx is cancelled
 // or the container exits. The second channel yields a terminal error (or is
 // closed cleanly on EOF).
-func (d *DockerClient) LogsFollow(ctx context.Context, id string) (<-chan string, <-chan error) {
+func (d *DockerClient) LogsFollow(ctx context.Context, id string, tail int) (<-chan string, <-chan error) {
 	lines := make(chan string, 128)
 	errs := make(chan error, 1)
 	go func() {
 		defer close(lines)
 		defer close(errs)
+		tailValue := "all"
+		if tail > 0 {
+			tailValue = fmt.Sprintf("%d", tail)
+		}
 		rc, err := d.cli.ContainerLogs(ctx, id, container.LogsOptions{
 			ShowStdout: true,
 			ShowStderr: true,
 			Follow:     true,
 			Timestamps: true,
-			Tail:       "all",
+			Tail:       tailValue,
 		})
 		if err != nil {
 			errs <- err

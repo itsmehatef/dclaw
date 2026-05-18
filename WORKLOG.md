@@ -523,3 +523,38 @@ Three open questions deferred to Hatef: PR-B/C parallel vs serial (recommended: 
 - Latest green tag still: `v0.3.0-beta.2.6-platform-port`.
 - No code changes since beta.2.6; this session was 100% docs.
 - beta.3 ready to start when Hatef green-lights the plan.
+
+---
+
+## 2026-05-18 — beta.3 wipe-recovery implementation
+
+**Target tag:** `v0.3.0-beta.3-wipe-recovery`.
+
+Re-derived the beta.1 product work lost in the 2026-04-18 wipe, on top of `v0.3.0-beta.2.7-linux-bootstrap` (`e30c50b`):
+
+- **Phase0:** added migration `0003_chat_history.sql`, protocol chat/log history types, `ErrChatHistoryUnavailable=-32008`, and store methods for insert/list/delete chat messages.
+- **PR-A:** shipped `agent.logs.stream` with `agent.log.line`, `agent.log.done`, and `agent.log.error`; added `LogsStream` client support, hidden smoke-only `agent logs --stream`, TUI `ViewLogs`, and smoke Test 24.
+- **PR-B:** added `internal/tui/components/toasts` with 3-second, max-3 bottom-right toasts, global `t` dismiss, daemon/chat/log error surfacing, and render tests that preserve the bottom bar.
+- **PR-C:** persisted user + agent/error chat turns, added `agent.chat.history.list` / `agent.chat.history.append`, `dclaw agent chat history <name>`, TUI load-on-open with input blocked until history resolves, duplicate-send replay without re-exec, and smoke Test 25.
+- **PR-D:** refreshed README, architecture reality snapshot, beta.3 plan status/checklist, and this worklog entry.
+
+Tester loops found and fixed several release blockers before the tag:
+
+- Log streams now drain line/error channels and send explicit terminal done/error notifications.
+- Toast overlay no longer replaces whole rows or hides the bottom bar.
+- TUI history load cannot clobber a fast user prompt; stale loads are token-guarded.
+- `agent.chat.send` now requires `message_id`, returns `ErrChatHistoryUnavailable` before ack/exec on history failures, and duplicate retries replay or wait for persisted replies instead of executing twice.
+- `agent.chat.history.append` validates role/content/message ID and maps duplicate IDs as invalid params.
+- `LogsStream` falls back to the older polling path on `-32601 method not found`.
+
+Verification:
+
+- `go test -count=1 ./...` — green.
+- `go vet ./...` — green.
+- `make build` — green.
+- `git diff --check` — green.
+- `./scripts/smoke-cli.sh` — all 8 tests passed.
+- `./scripts/smoke-tui.sh` — passed.
+- `make smoke-daemon` — Tests 1-24 passed; Test 25 skipped cleanly because neither `ANTHROPIC_API_KEY` nor `ANTHROPIC_OAUTH_TOKEN` was set.
+
+Final state before release: beta.3 implementation complete and ready to tag/release as `v0.3.0-beta.3-wipe-recovery`.

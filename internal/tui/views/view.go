@@ -19,4 +19,6 @@ const (
 	// ViewChat is the interactive chat pane for a selected agent.
 	// Introduced in alpha.3.
 	ViewChat
+	// ViewLogs is the live log-tail pane for a selected agent.
+	ViewLogs
 )

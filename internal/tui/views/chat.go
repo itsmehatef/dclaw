@@ -11,16 +11,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/itsmehatef/dclaw/internal/client"
+	"github.com/itsmehatef/dclaw/internal/protocol"
 )
 
 // ChatMessage is one in-memory message in the conversation.
 // Alpha.3: stored in RAM only. Beta.1 persists to SQLite.
 type ChatMessage struct {
-	Role      string    // "user" | "agent" | "system" | "error"
-	AgentName string    // agent name for display (agent messages only)
-	Content   string    // complete text (accumulated from deltas)
-	Streaming bool      // true while this message is still receiving chunks
-	MessageID string    // content-addressed ID; set when Final=true
+	Role      string // "user" | "agent" | "system" | "error"
+	AgentName string // agent name for display (agent messages only)
+	Content   string // complete text (accumulated from deltas)
+	Streaming bool   // true while this message is still receiving chunks
+	MessageID string // content-addressed ID; set when Final=true
 	Timestamp time.Time
 }
 
@@ -128,7 +129,7 @@ func (m *ChatModel) AppendChunk(chunk client.ChatChunkEvent) {
 	// Append to in-progress agent message if one exists.
 	if len(m.messages) > 0 {
 		last := &m.messages[len(m.messages)-1]
-		if last.Role == "agent" && last.Streaming {
+		if last.Role == chunk.Role && last.Streaming {
 			last.Content += chunk.Text
 			last.Streaming = !chunk.Final
 			if chunk.Final {
@@ -141,8 +142,12 @@ func (m *ChatModel) AppendChunk(chunk client.ChatChunkEvent) {
 		}
 	}
 	// Start a new agent message.
+	role := chunk.Role
+	if role == "" {
+		role = "agent"
+	}
 	m.messages = append(m.messages, ChatMessage{
-		Role:      "agent",
+		Role:      role,
 		AgentName: m.agentName,
 		Content:   chunk.Text,
 		Streaming: !chunk.Final,
@@ -163,6 +168,30 @@ func (m *ChatModel) AppendError(err error) {
 		Content:   err.Error(),
 		Timestamp: time.Now(),
 	})
+	m.rebuildViewport()
+	m.vp.GotoBottom()
+}
+
+// LoadHistory replaces in-memory history with persisted messages.
+func (m *ChatModel) LoadHistory(messages []protocol.ChatMessage) {
+	m.messages = nil
+	m.lastMsgID = ""
+	for _, msg := range messages {
+		timestamp := time.Unix(msg.Timestamp, 0)
+		if msg.Timestamp == 0 {
+			timestamp = time.Time{}
+		}
+		m.messages = append(m.messages, ChatMessage{
+			Role:      msg.Role,
+			AgentName: m.agentName,
+			Content:   msg.Content,
+			MessageID: msg.MessageID,
+			Timestamp: timestamp,
+		})
+		if msg.MessageID != "" {
+			m.lastMsgID = msg.MessageID
+		}
+	}
 	m.rebuildViewport()
 	m.vp.GotoBottom()
 }

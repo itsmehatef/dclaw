@@ -2,21 +2,21 @@
 
 **Goal:** One batched, five-PR series that re-derives the three pieces of product content lost when Hatef's machine was wiped on 2026-04-18 mid-beta.1: the **logs view** (TUI live-tail of agent stdout/stderr via a streaming RPC), **toasts** (bottom-right floating notifications), and **chat history persistence** (SQLite-backed per-agent message log loaded on every chat open). Phase-0 prep — schema migration `0003_chat_history.sql`, new protocol types, and repo methods — re-derives the lost `d84554d` commit. Zero infrastructure work; every line is product-surface that the original beta.1 plan had already designed and shipped privately before the wipe took the disk. beta.3 lands these on top of the hardened sandbox + paths floor that beta.1-paths-hardening + beta.2-sandbox-hardening + the beta.2.X polish series have laid down.
 
-**Prereq:** `v0.3.0-beta.2.6-platform-port` tagged at commit `fe69729`. Main tip `5b8d46d` (WORKLOG-only commit on top). `docs/phase-3-beta2-sandbox-hardening-plan.md` is the most recently shipped phase doc and the structural template for this plan. Migrations on disk: `0001_initial.sql`, `0002_workspace_trust.sql`. `go 1.25.0` installed; Docker reachable for end-to-end smoke (Tests 24/25 require it). `dclaw-agent:v0.1` image built. `internal/daemon/logs.go` already contains a `LogStreamer` skeleton (alpha.1-vintage stub with `LogsFollow` plumbing into `internal/sandbox/docker.go:LogsFollow`); beta.3 wires it to a real RPC.
+**Prereq:** `v0.3.0-beta.2.7-linux-bootstrap` tagged at commit `e30c50b` (also `origin/main` when this branch started). `docs/phase-3-beta2-sandbox-hardening-plan.md` remains the most recently shipped hardening phase doc and the structural template for this plan. Migrations on disk before beta.3: `0001_initial.sql`, `0002_workspace_trust.sql`. `go 1.25.0` installed; Docker reachable for end-to-end smoke (Tests 24/25 require it). `dclaw-agent:v0.1` image built. `internal/daemon/logs.go` already contained a `LogStreamer` skeleton (alpha.1-vintage stub with `LogsFollow` plumbing into `internal/sandbox/docker.go:LogsFollow`); beta.3 wires it to a real RPC.
 
 ---
 
 ## 0. Status
 
-**DRAFT (2026-04-25).** Plan written; build not yet started. Gated on Hatef sign-off.
+**SHIPPED (2026-05-18).** Implemented on `codex/beta3-wipe-recovery`, verified through Go tests, build, smoke CLI/TUI, and smoke daemon. Release target: `v0.3.0-beta.3-wipe-recovery`.
 
 | Field | Value |
 |---|---|
 | **Target tag** | `v0.3.0-beta.3-wipe-recovery` (with `.1`, `.2`, ... patch revs as needed, matching the beta.1 / beta.2 cadence) |
-| **Branch** | `main` (single batched review cycle; sub-branches per PR, squash-merged) |
-| **Base commit** | `5b8d46d` (main tip — WORKLOG-only commit on top of `v0.3.0-beta.2.6-platform-port` @ `fe69729`) |
-| **Est. duration** | 3–4 days (5 PRs: Phase-0 + A + (B parallel C) + D) |
-| **Prereqs** | beta.2.6 green; smoke-daemon.sh Tests 1-23 green on tip; main-push docker-smoke trigger active (per beta.2.1) |
+| **Branch** | `codex/beta3-wipe-recovery` during implementation; release tag cut after merge/push |
+| **Base commit** | `e30c50b` (`v0.3.0-beta.2.7-linux-bootstrap`) |
+| **Est. duration** | Completed as one batched beta.3 implementation cycle |
+| **Prereqs** | beta.2.7 green; smoke-daemon.sh Tests 1-23 green on tip; main-push docker-smoke trigger active (per beta.2.1) |
 | **Trigger** | Pre-wipe content recovery — original beta.1 plan & code shipped privately on Hatef's machine before the 2026-04-18 wipe; never pushed. WORKLOG.md 2026-04-19 lists the lost artifacts: `29633a8` (logs view + Test 14), Agent B (toasts, Q1=bottom-right-float), Agent C (chat history, Q2=Option A "load on every openChat"), Phase 0 commit `d84554d` (migration `0003_` + protocol types + repo methods). |
 
 ---
@@ -34,9 +34,9 @@ The hole has three orthogonal product dimensions, each with its own implementati
 **What beta.3-wipe-recovery delivers (IN SCOPE):**
 
 - **PR-Phase0 — Schema migration + protocol types + repo methods.** Re-derives the lost `d84554d` commit from scratch. New `internal/store/migrations/0003_chat_history.sql` adding a `chat_messages` table (FK to `agents.id`, with role / content / parent_id / message_id / sequence / timestamp). New protocol types in `internal/protocol/messages.go`: `LogsStreamParams`, `LogsStreamLineNotification`, `ChatHistoryListParams`, `ChatHistoryListResult`, `ChatHistoryAppendParams`, `ChatHistoryAppendResult`, `ChatMessage` wire shape. New repo methods on `internal/store/repo.go`: `InsertChatMessage`, `ListChatHistory(agentID string, limit int)`, `DeleteChatHistoryForAgent(agentID string)` (called from `DeleteAgent` so chat-history rows get cascade-deleted via the `ON DELETE CASCADE` FK declared in the migration; `DeleteChatHistoryForAgent` exists for tests + future operator subcommands). One Phase-0 commit, no behavior change visible to the CLI/TUI yet — gates everything below.
-- **PR-A — Logs view + `agent.logs.stream` RPC.** `internal/protocol/messages.go` types from Phase-0 are now consumed. New daemon-side handler in `internal/daemon/router.go`: `agent.logs.stream` follows the `agent.chat.send` precedent — a streaming method whose handler does its own send (returns nil from `Dispatch` so the router doesn't double-send). Existing `LogStreamer.Stream` (`internal/daemon/logs.go:38`) is wired into the new handler. New `internal/client/rpc.go:LogsStream` mirroring `ChatSend`'s dedicated-connection pattern. New `internal/tui/views/logs.go` (`LogsModel`) — a viewport-bubble-backed scrollback of agent stdout, polled-as-stream like the chat chunks. New `ViewLogs` constant in `internal/tui/views/view.go`. Root model gains a `m.logs` field plus key handler `l` to open from `ViewList` / `ViewDetail`. Smoke Test 24 (start agent, attach logs view, assert stdout content appears).
+- **PR-A — Logs view + `agent.logs.stream` RPC.** `internal/protocol/messages.go` types from Phase-0 are now consumed. New daemon-side handler in `internal/daemon/router.go`: `agent.logs.stream` follows the `agent.chat.send` precedent — a streaming method whose handler does its own send (returns nil from `Dispatch` so the router doesn't double-send). Existing `LogStreamer.Stream` (`internal/daemon/logs.go:38`) is wired into the new handler and now drains line/error channels to terminal `agent.log.done` or `agent.log.error` notifications. New `internal/client/rpc.go:LogsStream` mirrors `ChatSend`'s dedicated-connection pattern. New `internal/tui/views/logs.go` (`LogsModel`) — a viewport-bubble-backed scrollback of agent stdout, polled-as-stream like the chat chunks. New `ViewLogs` constant in `internal/tui/views/view.go`. Root model gains a `m.logs` field plus key handler `l` to open from `ViewList` / `ViewDetail`. Smoke Test 24 (start agent, attach logs view, assert stdout content appears).
 - **PR-B — Toasts component.** New `internal/tui/components/` package (lipgloss-styled, no bubbletea sub-model — purely a render helper plus a tiny FIFO-with-timer state machine on the root). Bottom-right float per Q1. Auto-dismiss timer (3s steady-state; see §11 Q3). Max stack depth 3 (toasts beyond push the oldest off-screen). Dismissal via `t` key swallows the topmost. Integrated into the root `View()` so any view can `m.toast(level, message)` to push. Wire into `agent.create` / `agent.delete` / daemon-disconnect / error-render paths. Smoke Test (visual; not in `smoke-daemon.sh` — toast rendering is asserted via Go unit tests on the `toasts.Render` function and a `tea.Program`-snapshot test in `internal/tui/app_test.go`).
-- **PR-C — Chat history persistence.** Daemon side: `ChatHandler.Handle` (`internal/daemon/chat.go:40`) hooks into `repo.InsertChatMessage` for both the user-supplied content (immediately, before exec) and the assembled agent reply (on Final=true). New `agent.chat.history.list` / `agent.chat.history.append` RPCs registered in `internal/daemon/router.go`. CLI side: `internal/client/rpc.go:ChatHistoryList` method. TUI side: `internal/tui/model.go:openChat` calls `m.rpc.ChatHistoryList(ctx, agentName, 0)` (0 = all per Q2 cap discussion in §11 Q4) and pre-populates `m.chat.messages` before the textarea takes focus. Smoke Test 25 (chat round-trip, leave chat, re-open chat, assert prior messages visible).
+- **PR-C — Chat history persistence.** Daemon side: `ChatHandler.Handle` (`internal/daemon/chat.go:40`) hooks into `repo.InsertChatMessage` for both the user-supplied content (immediately, before exec) and the assembled agent/error reply (on Final=true). User-turn persistence failure returns `ErrChatHistoryUnavailable` before ack; duplicate user message IDs replay an existing persisted reply without executing the agent again. New `agent.chat.history.list` / `agent.chat.history.append` RPCs registered in `internal/daemon/router.go`; append validates role/content and maps duplicates as invalid params. CLI side: `internal/client/rpc.go:ChatHistoryList` method plus `dclaw agent chat history <name>`. TUI side: `internal/tui/model.go:openChat` calls `m.rpc.ChatHistoryList(ctx, agentName, 0)` (0 = all per Q2 cap discussion in §11 Q4) and blocks new input until the history load succeeds or gracefully degrades. Smoke Test 25 (chat round-trip, then `agent chat history` asserts prior messages) runs when an Anthropic token is present and skips cleanly otherwise.
 - **PR-D — Cleanup + docs.** `README.md` mentions the new view + toast surface in the "Try it" example. `docs/architecture.md` updates the wire-protocol sub-section to add the three new RPCs. `agent/README.md` is unchanged (agent-side untouched). New `docs/phase-3-beta3-wipe-recovery-plan.md` flipped from DRAFT to SHIPPED. WORKLOG entry. Possibly: tighten any TUI corners exposed by the new components (e.g., the `views/help.go` "Coming in beta.1" stale text).
 
 **What this phase does NOT deliver (NOT IN SCOPE):**
@@ -78,7 +78,7 @@ beta.4+ / v0.3.0 GA             → channel bridging, plugin polish, GA
 
 **No wire protocol envelope change.** All new methods slot under existing JSON-RPC 2.0; new error code uses the existing dclaw custom range (`-32008` reserved for `ErrChatHistoryUnavailable`, see §6.2).
 
-**Promoted indirect → direct (optional).** None.
+**Promoted indirect → direct.** `github.com/charmbracelet/x/ansi` is now a direct dependency because the toast overlay uses ANSI-aware truncation while preserving the bottom bar.
 
 After any inadvertent `go.mod` touch, run `go mod tidy` from the repo root.
 
@@ -302,8 +302,8 @@ pass "agent.logs.stream RPC delivers stdout lines"
 | File | Kind | Notes |
 |---|---|---|
 | `/Users/macmini/workspace/agents/atlas/dclaw/internal/daemon/router.go` | MODIFIED | Two new handlers in the handlers map: `"agent.chat.history.list": r.handleChatHistoryList`, `"agent.chat.history.append": r.handleChatHistoryAppend`. New methods: `handleChatHistoryList` parses `ChatHistoryListParams`, calls `repo.GetAgent(name)` to resolve `agent.ID`, then `repo.ListChatHistory(agentID, limit)`, returns `protocol.ChatHistoryListResult{Messages: ...}`. `handleChatHistoryAppend` is mostly used internally by `ChatHandler` (see below) but also exposed as an RPC for completeness — parses `ChatHistoryAppendParams`, calls `repo.InsertChatMessage`, returns `protocol.AckResult{Ack: true}`. Net lines: ~+50. |
-| `/Users/macmini/workspace/agents/atlas/dclaw/internal/daemon/chat.go` | MODIFIED | (1) `ChatHandler.Handle` (line 40) gains a `repo *store.Repo` field already-present-on-struct (line 25). (2) After parsing `req` and validating the agent, BEFORE the exec, write the user-side message: `repo.InsertChatMessage(ctx, store.ChatMessageRecord{ID: store.NewID(), AgentID: rec.ID, Role: "user", Content: req.Content, ParentID: req.ParentID, MessageID: req.MessageID, Sequence: 0, Timestamp: time.Now().Unix()})`. Wrap in `if err := ...; err != nil { /* log warn, continue — don't fail the chat round-trip on a persistence failure */ }`. (3) After the final chunk lands (`exitCode == 0` happy path, around line 152), write the agent-side reply: same shape with `Role: "agent"`, `Content: text`, `ParentID: req.MessageID` (the user message's ID is the agent reply's parent), `MessageID: <new ULID-derived ID, since the chunk's MessageID is empty in the alpha.4 final-chunk shape — see §11 Q6>`, `Sequence: <chunk.Sequence ?: 0>`. Same fail-soft on persistence error. (4) On error paths (`execErr`, `exitCode != 0`), record an `error`-role row so history reflects what happened; matches the in-memory `ChatModel.AppendError` pattern at line 160 of `internal/tui/views/chat.go`. Net lines: ~+45. |
-| `/Users/macmini/workspace/agents/atlas/dclaw/internal/daemon/chat_test.go` | MODIFIED | New tests: `TestChatHandlerPersistsUserAndAgentMessages` (round-trip via mockDockerExec, then `repo.ListChatHistory` returns 2 rows: user + agent), `TestChatHandlerPersistsErrorMessage` (exec fails → 2 rows: user + error), `TestChatHandlerSurvivesPersistenceFailure` (inject a closed-DB error from repo, chat still sends the chunk). Net lines: ~+200. |
+| `/Users/macmini/workspace/agents/atlas/dclaw/internal/daemon/chat.go` | MODIFIED | (1) `agent.chat.send` now requires a caller-supplied `message_id` so retries are idempotent across all JSON-RPC clients, not only the Go client. (2) After parsing `req` and validating the agent, BEFORE the exec, write the user-side message: `repo.InsertChatMessage(ctx, store.ChatMessageRecord{ID: store.NewID(), AgentID: rec.ID, Role: "user", Content: req.Content, ParentID: req.ParentID, MessageID: req.MessageID, Sequence: 0, Timestamp: time.Now().Unix()})`. User-row persistence failures return `ErrChatHistoryUnavailable` before ack/exec. (3) Duplicate user message IDs replay an existing persisted reply, or wait for the in-flight original reply, without executing the agent a second time. (4) After the final chunk lands, write the agent-side reply with a fresh ULID-derived `MessageID` and `ParentID` set to the user's message ID. (5) On error paths (`execErr`, `exitCode != 0`), record an `error`-role row so history reflects what happened; if reply persistence fails, surface an error chunk. |
+| `/Users/macmini/workspace/agents/atlas/dclaw/internal/daemon/chat_test.go` | MODIFIED | New tests cover user+agent persistence, error-row persistence, missing `message_id`, duplicate replay after completion, duplicate replay while the original send is still in-flight, user persistence failure before ack/exec, and `agent.chat.history.append` validation/duplicate mapping. |
 | `/Users/macmini/workspace/agents/atlas/dclaw/internal/client/rpc.go` | MODIFIED | New methods: `ChatHistoryList(ctx, agentName string, limit int) ([]protocol.ChatMessage, error)` — wraps `c.call("agent.chat.history.list", ...)`. `ChatHistoryAppend(ctx, agentName, role, content, parentID, messageID string, sequence int) error` — exposed for symmetry; the TUI doesn't call it (the daemon's `ChatHandler` writes through `repo.InsertChatMessage` directly). Net lines: ~+50. |
 | `/Users/macmini/workspace/agents/atlas/dclaw/internal/client/rpc_chat_test.go` | MODIFIED | Add `TestChatHistoryListRoundTrip` against a mock daemon. Net lines: ~+80. |
 | `/Users/macmini/workspace/agents/atlas/dclaw/internal/tui/views/chat.go` | MODIFIED | (1) New method `(m *ChatModel) LoadHistory(messages []protocol.ChatMessage)` that converts each protocol-shape message to a views-shape `ChatMessage` and appends to `m.messages`. Sets `m.lastMsgID` to the last message's ID so the next user submit threads correctly. (2) `Reset` clears `m.lastMsgID` AND `m.messages` (already does). (3) `(m *ChatModel) HasHistory() bool` for the TUI to know whether to show the "(no prior conversation)" placeholder. Net lines: ~+45. |
@@ -367,10 +367,10 @@ fi
 2. After a chat round-trip, `sqlite3 $STATE_DIR/state.db 'SELECT count(*) FROM chat_messages'` returns ≥ 2 (user + agent).
 3. Re-opening the TUI chat view for an agent with prior history shows the prior messages BEFORE the user types anything new (asserted by `TestOpenChatLoadsHistory` in `internal/tui/app_test.go`).
 4. Smoke Test 25 green when `ANTHROPIC_API_KEY` is set; skip otherwise (matches Test 13 precedent).
-5. Persistence failures do NOT break the chat round-trip — covered by `TestChatHandlerSurvivesPersistenceFailure`.
+5. User-row persistence failures abort before ack/exec with `ErrChatHistoryUnavailable`; reply-row persistence failures surface as error chunks.
 6. `dclaw agent chat history <name>` subcommand exists and emits JSON.
 
-**Rollout risk:** Medium. The `ChatHandler` write path is the hot path for chat traffic; a slow SQLite write could add latency to chat. Mitigation: writes go through `repo.InsertChatMessage` which uses a single-row prepared INSERT against a WAL-mode database with `busy_timeout=5000` (per `internal/store/schema.go:28`). On a SSD this is single-digit milliseconds. Worst case: write hangs for the full 5s busy_timeout — chat reply is already streamed to the user; persistence is fire-and-forget asynchronously? **Decision: synchronous, but fail-soft.** A persistence failure logs at WARN level and the chat continues. Recovery on next round-trip when the DB lock clears.
+**Rollout risk:** Medium. The `ChatHandler` write path is the hot path for chat traffic; a slow SQLite write could add latency to chat. Mitigation: writes go through `repo.InsertChatMessage` which uses a single-row INSERT against a WAL-mode database with `busy_timeout=5000` (per `internal/store/schema.go:28`). On an SSD this is single-digit milliseconds. Worst case: the user-row write can hang for the full 5s busy_timeout and then return `ErrChatHistoryUnavailable` before any exec happens. This is deliberate: beta.3's recovery goal is durable chat history, so a chat turn is not accepted unless the user side is recorded first.
 
 **Rollback:** Revert. New chat sessions stop being persisted; existing rows remain in `chat_messages` (harmless). On next deploy, persistence resumes seamlessly because the schema is backward-compatible. If reverting Phase-0 too (drops the table), existing rows are lost — but no production deploy depends on them yet.
 
@@ -384,17 +384,20 @@ fi
 
 | File | Kind | Notes |
 |---|---|---|
-| `/Users/macmini/workspace/agents/atlas/dclaw/docs/phase-3-beta3-wipe-recovery-plan.md` | MODIFIED | Flip §0 Status from `DRAFT` to `SHIPPED (2026-04-DD) as v0.3.0-beta.3-wipe-recovery`. Add the 5-commit table (Phase0/A/B/C/D hashes). Same shape as beta.2 plan §0. Net lines: ~+10. |
-| `/Users/macmini/workspace/agents/atlas/dclaw/README.md` | MODIFIED | (1) Version line on the second header (currently `v0.3.0-beta.2.6-platform-port`) → `v0.3.0-beta.3-wipe-recovery`. (2) Code-fence example `dclaw agent attach` flow — add a sentence about the `l` key (open logs view). (3) "Try it" section — add a one-liner about toast notifications. Net lines: ~+8. |
+| `/Users/macmini/workspace/agents/atlas/dclaw/docs/phase-3-beta3-wipe-recovery-plan.md` | MODIFIED | Flip §0 Status from `DRAFT` to `SHIPPED (2026-05-18)` as v0.3.0-beta.3-wipe-recovery and update the acceptance checklist. |
+| `/Users/macmini/workspace/agents/atlas/dclaw/README.md` | MODIFIED | (1) Version example updated to `v0.3.0-beta.3-wipe-recovery`. (2) Quick-start and manual-run examples mention `dclaw agent chat history`. (3) TUI notes mention `c` for chat, `l` for logs, and `t` for toast dismissal. |
 | `/Users/macmini/workspace/agents/atlas/dclaw/docs/architecture.md` | MODIFIED | "Wire protocol — daemon-bound methods" subsection — add three new method names (`agent.logs.stream`, `agent.chat.history.list`, `agent.chat.history.append`) plus the new `ErrChatHistoryUnavailable = -32008` code. Net lines: ~+12. |
 | `/Users/macmini/workspace/agents/atlas/dclaw/internal/tui/views/help.go` | MODIFIED | Drop the stale "Coming in beta.1" subsection (lines 47-49). Move `l: open logs view` into the active key list. Add `t: dismiss toast` in the Actions section. Net lines: ~+3 / ~-2. |
-| `/Users/macmini/workspace/agents/atlas/dclaw/WORKLOG.md` | MODIFIED | New `## 2026-04-DD — beta.3 wipe-recovery build cycle` section, mirroring the structure of the 2026-04-23 beta.2 entry. Net lines: ~+80. |
+| `/Users/macmini/workspace/agents/atlas/dclaw/WORKLOG.md` | MODIFIED | New `## 2026-05-18 — beta.3 wipe-recovery implementation` section with scope, tester findings, and verification results. |
 | `/Users/macmini/workspace/agents/atlas/dclaw/agent/README.md` | UNCHANGED | Agent-side untouched by beta.3. |
 | `/Users/macmini/workspace/agents/atlas/dclaw/docs/workspace-root.md` | UNCHANGED | Workspace policy untouched. |
 
 **Test plan:**
 
-- `make lint` (golangci-lint + shellcheck) green.
+- `go test -count=1 ./...` green.
+- `go vet ./...` green.
+- `make build` green.
+- `git diff --check` green.
 - `git grep "v0.3.0-beta.2.6"` in docs returns only WORKLOG entries (intentionally preserved as historical markers).
 - `git grep "Coming in beta.1"` returns zero hits in `internal/tui/views/help.go`.
 
@@ -522,7 +525,7 @@ All tests follow the existing precedent: isolated `STATE_DIR`, trap-armed cleanu
 **On existing workflows:**
 
 - `dclaw agent logs -f <name>` (CLI) is unchanged — still uses the alpha.1 polling path. The new streaming RPC is TUI-only by default, with the hidden `--stream` flag (mentioned in §4.2a) reserved for smoke testing. If §11 Q2 lands the operator-facing `--stream`, that's a beta.3.X polish patch.
-- `dclaw agent attach <name>` (alpha.3 chat-attach) gains pre-loaded history. Operators who chat with the same agent over multiple sessions see the conversation thread.
+- `dclaw agent chat <name>` gains pre-loaded history in the TUI path. Operators who chat with the same agent over multiple sessions see the conversation thread.
 
 **CI impact.** `docker-smoke` runtime grows ~5s on every main-push and tag-push (Test 24). Test 25 is skipped without the API key. Post-beta.3 docker-smoke estimated ~85-95s. No new GitHub Actions secrets needed.
 
@@ -600,7 +603,7 @@ No breaking wire changes.
 | `TestToastPushedOnDaemonDisconnect` | `internal/tui/app_test.go` | daemonErrMsg → toast | B |
 | `TestChatHandlerPersistsUserAndAgentMessages` | `internal/daemon/chat_test.go` | round-trip writes 2 rows | C |
 | `TestChatHandlerPersistsErrorMessage` | `internal/daemon/chat_test.go` | error path writes 2 rows | C |
-| `TestChatHandlerSurvivesPersistenceFailure` | `internal/daemon/chat_test.go` | DB error doesn't break chat | C |
+| `TestChatHandlerUserPersistenceFailureAbortsBeforeAckOrExec` | `internal/daemon/chat_test.go` | DB error returns `ErrChatHistoryUnavailable` before ack/exec | C |
 | `TestChatHistoryListRoundTrip` | `internal/client/rpc_chat_test.go` | RPC call shape | C |
 | `TestOpenChatLoadsHistory` | `internal/tui/app_test.go` | openChat fetches + populates messages | C |
 | All existing tests | various | regression | Phase0/A/B/C/D |
@@ -654,7 +657,7 @@ The CLI's existing `dclaw agent logs -f <name>` polling path stays the operator-
 - 1.5s is too short for the daemon-disconnect message which has actionable text ("press r to retry" — implicit).
 - Max stack 3: more than 3 simultaneous toasts means something is broken; instead of stacking 8 toasts, drop the oldest. Operators see "chained" toast events as the newest 3.
 
-Rendering positioning: bottom-right via `lipgloss.Place(width, height-2, lipgloss.Right, lipgloss.Bottom, stackBox)` over the existing chrome. Subtracting `height-2` because the existing top + bottom chrome reserve 2 rows; toasts overlay the main content area's bottom-right corner. If the active view (chat, logs) wants the bottom-right for its own renderer (chat doesn't; logs scrolls), there's a one-line collision — accepted as polish-pass concern.
+Rendering positioning: bottom-right compact stack over the existing chrome. The shipped implementation renders only the toast stack, then overlays those lines onto the right edge of the full view with ANSI-aware truncation so the bottom bar and left-side context remain visible. This replaced the earlier `lipgloss.Place(...)` sketch after tester review caught whole-row replacement.
 
 ### Q4: `ChatHistoryList` cap — load all or last N?
 
@@ -682,7 +685,7 @@ Alternative considered: hash the agent's reply content to derive its `MessageID`
 
 **Decided: silent graceful degradation.** When `client.ChatHistoryList` returns `-32601 method not found`, the TUI swallows the error and continues with empty history. No toast. No error visible to the user. Matches the wire-protocol's forward-compat pattern (older daemons silently lack newer features; `protocol.Version` stays at 1 because no breaking change).
 
-For `client.LogsStream` returning `-32601`: fall back to the alpha.1 polling path internally — the user gets logs either way, just via the slower mechanism. Implementation: `LogsStream` catches the error code, calls `AgentLogs(name, 100, true)` instead, returns a wrapped channel. ~20 LoC fallback in `internal/client/rpc.go:LogsStream`.
+For `client.LogsStream` returning `-32601`: fall back to the alpha.1 polling path internally — the user gets logs either way, just via the slower mechanism. Implementation: `LogsStream` catches the error code, calls `AgentLogs(name, 100, true)` instead, returns a wrapped channel.
 
 Decision rationale: a TUI that won't open against a slightly-older daemon is worse UX than a TUI that loses a feature. Hatef can override.
 
@@ -716,38 +719,38 @@ Decision rationale: a TUI that won't open against a slightly-older daemon is wor
 
 Hatef ticks these off before tagging.
 
-- [ ] PR-Phase0 merges clean on top of `5b8d46d`; CI green (build + vet + docker-smoke).
-- [ ] PR-Phase0: `internal/store/migrations/` has exactly three files (`0001_`, `0002_`, `0003_chat_history.sql`).
-- [ ] PR-Phase0: `go test ./internal/store/...` green with three new chat-history tests.
-- [ ] PR-Phase0: migration 0003 up→down→up roundtrip verified.
-- [ ] PR-A merges clean; CI green.
-- [ ] PR-A: `internal/tui/views/logs.go` exists; `internal/tui/views/view.go` declares `ViewLogs`.
-- [ ] PR-A: `agent.logs.stream` and `agent.log.line` registered in router (grep returns ≥4 hits across daemon/protocol/client/tui).
-- [ ] PR-A: smoke Test 24 green on docker-reachable host (covered by main-push docker-smoke per beta.2.1 trigger).
-- [ ] PR-A: existing `agentLogsFollowPoll` retained for CLI fallback.
-- [ ] PR-A: pressing `l` in TUI ViewList opens ViewLogs (manual verification).
-- [ ] PR-B merges clean; CI green.
-- [ ] PR-B: `internal/tui/components/toasts.go` exists with Push/Tick/DismissTop/Render.
-- [ ] PR-B: `go test ./internal/tui/components/...` green with five new tests.
-- [ ] PR-B: bottom-right placement asserted via lipgloss render output.
-- [ ] PR-B: kill daemon mid-session → warning toast appears, auto-dismisses after 3s (manual verification).
-- [ ] PR-C merges clean; CI green.
-- [ ] PR-C: chat round-trip persists 2 rows (user + agent) — asserted by `TestChatHandlerPersistsUserAndAgentMessages`.
-- [ ] PR-C: re-opening chat for an agent shows prior history before user types — asserted by `TestOpenChatLoadsHistory`.
-- [ ] PR-C: `dclaw agent chat history <name>` subcommand exists; `-o json` emits the array.
-- [ ] PR-C: smoke Test 25 green when `ANTHROPIC_API_KEY` set; SKIPs cleanly otherwise.
-- [ ] PR-C: persistence failures don't break chat — asserted by `TestChatHandlerSurvivesPersistenceFailure`.
-- [ ] PR-D merges clean; CI green.
-- [ ] PR-D: `docs/phase-3-beta3-wipe-recovery-plan.md` §0 reads SHIPPED with the 5-commit table.
-- [ ] PR-D: `README.md` version header is `v0.3.0-beta.3-wipe-recovery`.
-- [ ] PR-D: `docs/architecture.md` lists the three new RPC methods and the new error code.
-- [ ] PR-D: `internal/tui/views/help.go` no longer shows "Coming in beta.1" stale text.
-- [ ] PR-D: `WORKLOG.md` has a new dated section for beta.3.
-- [ ] All five PRs squash-merged to `main` in order Phase0 → A → B → C → D.
+- [x] PR-Phase0 implemented on top of `e30c50b`; local build/test ladder green.
+- [x] PR-Phase0: `internal/store/migrations/` has exactly three files (`0001_`, `0002_`, `0003_chat_history.sql`).
+- [x] PR-Phase0: `go test ./internal/store/...` green with chat-history tests.
+- [x] PR-Phase0: migration 0003 up→down→up roundtrip verified.
+- [x] PR-A implemented.
+- [x] PR-A: `internal/tui/views/logs.go` exists; `internal/tui/views/view.go` declares `ViewLogs`.
+- [x] PR-A: `agent.logs.stream`, `agent.log.line`, `agent.log.done`, and `agent.log.error` registered/handled across daemon/protocol/client/tui.
+- [x] PR-A: smoke Test 24 green on docker-reachable host.
+- [x] PR-A: existing `agentLogsFollowPoll` retained for CLI fallback.
+- [x] PR-A: pressing `l` in TUI ViewList opens ViewLogs (asserted by TUI tests).
+- [x] PR-B implemented.
+- [x] PR-B: `internal/tui/components/toasts.go` exists with Push/Tick/DismissTop/Render.
+- [x] PR-B: `go test ./internal/tui/components/...` green with toast tests.
+- [x] PR-B: bottom-right placement asserted via render-output tests that preserve the bottom bar.
+- [x] PR-B: daemon disconnect pushes a warning toast and auto-dismiss is covered by unit tests.
+- [x] PR-C implemented.
+- [x] PR-C: chat round-trip persists 2 rows (user + agent) — asserted by daemon tests.
+- [x] PR-C: re-opening chat for an agent loads prior history before input is accepted — asserted by TUI tests.
+- [x] PR-C: `dclaw agent chat history <name>` subcommand exists; `-o json` emits the array.
+- [x] PR-C: smoke Test 25 runs when `ANTHROPIC_API_KEY`/`ANTHROPIC_OAUTH_TOKEN` is set; SKIPs cleanly otherwise.
+- [x] PR-C: persistence failures before ack are surfaced as `ErrChatHistoryUnavailable`; duplicate sends replay persisted replies without re-exec.
+- [x] PR-D implemented.
+- [x] PR-D: `docs/phase-3-beta3-wipe-recovery-plan.md` §0 reads SHIPPED.
+- [x] PR-D: `README.md` version header is `v0.3.0-beta.3-wipe-recovery`.
+- [x] PR-D: `docs/architecture.md` lists the new RPC methods and the new error code.
+- [x] PR-D: `internal/tui/views/help.go` no longer shows "Coming in beta.1" stale text.
+- [x] PR-D: `WORKLOG.md` has a new dated section for beta.3.
+- [ ] Changes merged to `main`.
 - [ ] `git tag -a v0.3.0-beta.3-wipe-recovery -m "Phase 3 beta.3 wipe-recovery: re-derive logs view + toasts + chat history persistence"`.
 - [ ] `git push origin main v0.3.0-beta.3-wipe-recovery`.
 - [ ] `docker-smoke` CI workflow green on the new tag (Tests 1-25 all pass; 25 may SKIP).
-- [ ] `WORKLOG.md` ship entry written.
+- [x] `WORKLOG.md` ship entry written.
 
 ---
 
